@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { EffectiveConfig, GitWorkspace, Issue, Logger } from "./types.ts";
 import { isPathInside, sanitizeWorkspaceKey } from "./util.ts";
-import { runChecked } from "./process-runner.ts";
+import { runChecked, runProcess } from "./process-runner.ts";
 
 export class GitWorkspaceManager {
   private readonly config: EffectiveConfig;
@@ -88,8 +88,23 @@ export class GitWorkspaceManager {
   private async checkoutBranch(repoPath: string, branchName: string): Promise<void> {
     const base = this.config.git.baseBranch;
     const remote = this.config.github.remote;
-    let baseRef = `${remote}/${base}`;
 
+    if (branchName === base || branchName === "main" || branchName === "master") {
+      throw new Error(`refusing to use protected branch name: ${branchName}`);
+    }
+
+    const remoteBranchRef = `${remote}/${branchName}`;
+    if (await this.fetchRemoteBranch(repoPath, remote, branchName)) {
+      await runChecked("git", ["checkout", "-B", branchName, remoteBranchRef], { cwd: repoPath, timeoutMs: 120000 });
+      this.logger.info("git branch prepared from existing remote branch", {
+        cwd: repoPath,
+        branch: branchName,
+        remote_branch: remoteBranchRef,
+      });
+      return;
+    }
+
+    let baseRef = `${remote}/${base}`;
     try {
       await runChecked("git", ["fetch", remote, base], { cwd: repoPath, timeoutMs: 300000 });
     } catch (error) {
@@ -101,11 +116,17 @@ export class GitWorkspaceManager {
       baseRef = base;
     }
 
-    if (branchName === base || branchName === "main" || branchName === "master") {
-      throw new Error(`refusing to use protected branch name: ${branchName}`);
-    }
     await runChecked("git", ["checkout", "-B", branchName, baseRef], { cwd: repoPath, timeoutMs: 120000 });
-    this.logger.info("git branch prepared", { cwd: repoPath, branch: branchName, base: baseRef });
+    this.logger.info("git branch prepared from base branch", { cwd: repoPath, branch: branchName, base: baseRef });
+  }
+
+  private async fetchRemoteBranch(repoPath: string, remote: string, branchName: string): Promise<boolean> {
+    const result = await runProcess("git", [
+      "fetch",
+      remote,
+      `refs/heads/${branchName}:refs/remotes/${remote}/${branchName}`,
+    ], { cwd: repoPath, timeoutMs: 300000 });
+    return result.code === 0;
   }
 }
 

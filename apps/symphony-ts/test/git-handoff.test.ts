@@ -39,12 +39,52 @@ test("git workspace clones an allowed repo and checks out an issue branch", asyn
   assert.equal(branch, "symphony/SYM-1-test-issue");
 });
 
+test("git workspace reuses an existing remote issue branch", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "symphony-ts-git-reuse-"));
+  const remote = await createRemoteRepo(dir);
+  const config = resolveConfig({
+    tracker: { kind: "mock" },
+    workspace: { root: path.join(dir, "workspaces") },
+    git: {
+      enabled: true,
+      repo: remote,
+      allowed_repos: [remote],
+      base_branch: "main",
+      branch_prefix: "symphony",
+    },
+  }, path.join(dir, "WORKFLOW.md"));
+
+  const workspace = await new WorkspaceManager(config, new ConsoleLogger()).ensureWorkspace("SYM-1");
+  const first = await new GitWorkspaceManager(config, new ConsoleLogger()).prepare(workspace.path, issue());
+  await runChecked("git", ["config", "user.name", "Test User"], { cwd: first.runPath });
+  await runChecked("git", ["config", "user.email", "test@example.test"], { cwd: first.runPath });
+  await fs.writeFile(path.join(first.runPath, "remote-branch.txt"), "remote\n", "utf8");
+  await runChecked("git", ["add", "remote-branch.txt"], { cwd: first.runPath });
+  await runChecked("git", ["commit", "-m", "remote branch change"], { cwd: first.runPath });
+  const remoteBranchSha = (await runChecked("git", ["rev-parse", "HEAD"], { cwd: first.runPath })).stdout.trim();
+  await runChecked("git", ["push", "-u", "origin", first.branchName!], { cwd: first.runPath });
+  await runChecked("git", ["checkout", "main"], { cwd: first.runPath });
+
+  const reused = await new GitWorkspaceManager(config, new ConsoleLogger()).prepare(workspace.path, issue());
+
+  const head = (await runChecked("git", ["rev-parse", "HEAD"], { cwd: reused.runPath })).stdout.trim();
+  assert.equal(head, remoteBranchSha);
+  assert.equal(await fs.readFile(path.join(reused.runPath, "remote-branch.txt"), "utf8"), "remote\n");
+});
+
 test("handoff validates, commits, pushes, and creates a draft PR", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "symphony-ts-handoff-"));
   const remote = await createRemoteRepo(dir);
   const binDir = path.join(dir, "bin");
+  const ghLog = path.join(dir, "gh.log");
   await fs.mkdir(binDir);
-  await fs.writeFile(path.join(binDir, "gh"), "#!/usr/bin/env bash\nprintf 'https://github.com/acme/symphony/pull/1\\n'\n", { mode: 0o755 });
+  await fs.writeFile(path.join(binDir, "gh"), `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> ${JSON.stringify(ghLog)}
+if [[ "$1 $2" == "pr view" ]]; then
+  exit 1
+fi
+printf 'https://github.com/acme/symphony/pull/1\\n'
+`, { mode: 0o755 });
 
   const oldPath = process.env.PATH;
   process.env.PATH = `${binDir}:${oldPath ?? ""}`;
@@ -78,8 +118,63 @@ test("handoff validates, commits, pushes, and creates a draft PR", async () => {
     assert.equal(result.branchName, "symphony/SYM-1-test-issue");
     assert.equal(result.prUrl, "https://github.com/acme/symphony/pull/1");
     assert.match(result.commitSha ?? "", /^[0-9a-f]{40}$/);
+    const ghCalls = await fs.readFile(ghLog, "utf8");
+    assert.match(ghCalls, /pr view symphony\/SYM-1-test-issue/);
+    assert.match(ghCalls, /pr create/);
     const remoteBranch = (await runChecked("git", ["--git-dir", remote, "rev-parse", "symphony/SYM-1-test-issue"], { cwd: dir })).stdout.trim();
     assert.equal(remoteBranch, result.commitSha);
+  } finally {
+    process.env.PATH = oldPath;
+  }
+});
+
+test("handoff reuses an existing PR for the issue branch", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "symphony-ts-handoff-pr-reuse-"));
+  const remote = await createRemoteRepo(dir);
+  const binDir = path.join(dir, "bin");
+  const ghLog = path.join(dir, "gh.log");
+  await fs.mkdir(binDir);
+  await fs.writeFile(path.join(binDir, "gh"), `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> ${JSON.stringify(ghLog)}
+if [[ "$1 $2" == "pr view" ]]; then
+  printf 'https://github.com/acme/symphony/pull/1\\n'
+  exit 0
+fi
+printf 'unexpected gh call\\n' >&2
+exit 1
+`, { mode: 0o755 });
+
+  const oldPath = process.env.PATH;
+  process.env.PATH = `${binDir}:${oldPath ?? ""}`;
+  try {
+    const config = resolveConfig({
+      tracker: { kind: "mock" },
+      workspace: { root: path.join(dir, "workspaces") },
+      git: {
+        enabled: true,
+        repo: remote,
+        allowed_repos: [remote],
+        base_branch: "main",
+        branch_prefix: "symphony",
+        commit_author_name: "Symphony",
+        commit_author_email: "symphony@example.test",
+      },
+      github: {
+        create_pr: true,
+        draft: true,
+      },
+    }, path.join(dir, "WORKFLOW.md"));
+
+    const workspace = await new WorkspaceManager(config, new ConsoleLogger()).ensureWorkspace("SYM-1");
+    const gitWorkspace = await new GitWorkspaceManager(config, new ConsoleLogger()).prepare(workspace.path, issue());
+    await fs.writeFile(path.join(gitWorkspace.runPath, "followup.txt"), "done\n", "utf8");
+
+    const result = await new HandoffManager(config, new ConsoleLogger()).complete(issue(), gitWorkspace);
+
+    assert.equal(result.prUrl, "https://github.com/acme/symphony/pull/1");
+    const ghCalls = await fs.readFile(ghLog, "utf8");
+    assert.match(ghCalls, /pr view symphony\/SYM-1-test-issue/);
+    assert.doesNotMatch(ghCalls, /pr create/);
   } finally {
     process.env.PATH = oldPath;
   }

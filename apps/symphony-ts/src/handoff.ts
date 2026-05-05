@@ -68,7 +68,7 @@ export class HandoffManager {
         cwd: workspace.runPath,
         timeoutMs: 300000,
       });
-      prUrl = await this.createDraftPr(issue, workspace);
+      prUrl = await this.findExistingPrUrl(workspace) ?? await this.createDraftPr(issue, workspace);
     }
 
     return { changed: true, branchName: workspace.branchName, commitSha, prUrl, validationOutput };
@@ -121,6 +121,30 @@ export class HandoffManager {
       issue_identifier: issue.identifier,
       pr_url: url,
     });
+    return url;
+  }
+
+  private async findExistingPrUrl(workspace: GitWorkspace): Promise<string | null> {
+    if (!workspace.branchName) {
+      return null;
+    }
+    const result = await runProcess("gh", [
+      "pr",
+      "view",
+      workspace.branchName,
+      "--json",
+      "url",
+      "--jq",
+      ".url",
+    ], { cwd: workspace.runPath, timeoutMs: 120000 });
+    if (result.code !== 0) {
+      return null;
+    }
+    const url = result.stdout.trim();
+    if (!/^https?:\/\//.test(url)) {
+      return null;
+    }
+    this.logger.info("github pr reused", { pr_url: url });
     return url;
   }
 }
