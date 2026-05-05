@@ -11,7 +11,7 @@ This is a minimal Symphony-compatible orchestration app implemented with TypeScr
 
 ## Setup
 
-This app can be dogfooded from Linear through Symphony.
+This app can be dogfooded from Linear through Symphony, which will open draft PRs for review.
 
 ```sh
 cd apps/symphony-ts
