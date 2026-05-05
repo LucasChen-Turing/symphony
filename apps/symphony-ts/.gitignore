@@ -1,0 +1,3 @@
+dist/
+.workspaces/
+.env.local
