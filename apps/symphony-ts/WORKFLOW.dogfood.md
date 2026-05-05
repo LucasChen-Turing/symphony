@@ -4,7 +4,7 @@ tracker:
   api_key: $LINEAR_API_KEY
   team_key: SYM
   active_states:
-    - Ready for AI
+    - Todo
   terminal_states:
     - Done
     - Canceled
@@ -35,9 +35,8 @@ github:
 
 linear:
   writeback: true
-  running_status: AI Running
-  review_status: AI Needs Review
-  failed_status: AI Failed
+  running_status: In Progress
+  review_status: In Progress
 
 agent:
   max_concurrent_agents: 1
