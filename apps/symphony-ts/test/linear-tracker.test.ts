@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
 import { resolveConfig } from "../src/config.ts";
-import { LinearTracker, normalizeLinearIssue } from "../src/linear-tracker.ts";
+import { LinearTracker, SYMPHONY_RUN_REPORT_MARKER, feedbackSinceLastRun, normalizeLinearIssue } from "../src/linear-tracker.ts";
 import type { JsonMap } from "../src/types.ts";
 
 class MockLinearClient {
@@ -32,6 +32,7 @@ test("LinearTracker fetches candidate issues with configured filters and paginat
       active_states: ["Ready for AI"],
       labels: ["codex"],
       limit: 2,
+      comments_limit: 10,
       api_key: "$LINEAR_API_KEY",
     },
   }, path.join(process.cwd(), "WORKFLOW.md"), { LINEAR_API_KEY: "secret" });
@@ -66,6 +67,7 @@ test("LinearTracker fetches candidate issues with configured filters and paginat
     first: 2,
     after: null,
     stateNames: ["Ready for AI"],
+    commentsFirst: 10,
     teamKey: "ENG",
     projectSlug: "ai-project",
     labelNames: ["codex"],
@@ -95,7 +97,7 @@ test("LinearTracker refreshes issue states by ids", async () => {
   const issues = await tracker.fetchIssueStatesByIds(["issue-1"]);
 
   assert.equal(issues[0]!.state, "Done");
-  assert.deepEqual(client.calls[0]!.variables, { ids: ["issue-1"], first: 1 });
+  assert.deepEqual(client.calls[0]!.variables, { ids: ["issue-1"], first: 1, commentsFirst: 50 });
 });
 
 test("normalizeLinearIssue maps Linear payload into the internal Issue shape", () => {
@@ -111,6 +113,22 @@ test("normalizeLinearIssue maps Linear payload into the internal Issue shape", (
     updatedAt: "2026-01-03T03:04:05.000Z",
     state: { name: "Ready for AI" },
     labels: { nodes: [{ name: "Codex" }, { name: "Backend" }] },
+    comments: {
+      nodes: [
+        {
+          id: "comment-1",
+          body: `${SYMPHONY_RUN_REPORT_MARKER}\nSymphony run completed.`,
+          createdAt: "2026-01-03T04:00:00.000Z",
+          user: { displayName: "Symphony" },
+        },
+        {
+          id: "comment-2",
+          body: "Please mention draft PRs.",
+          createdAt: "2026-01-03T05:00:00.000Z",
+          user: { displayName: "Lucas" },
+        },
+      ],
+    },
     inverseRelations: {
       nodes: [
         {
@@ -136,9 +154,47 @@ test("normalizeLinearIssue maps Linear payload into the internal Issue shape", (
     url: "https://linear.app/acme/issue/ENG-1",
     labels: ["codex", "backend"],
     blocked_by: [{ id: "blocker-1", identifier: "ENG-0", state: "In Progress" }],
+    comments: [
+      {
+        id: "comment-1",
+        body: `${SYMPHONY_RUN_REPORT_MARKER}\nSymphony run completed.`,
+        created_at: "2026-01-03T04:00:00.000Z",
+        user_name: "Symphony",
+      },
+      {
+        id: "comment-2",
+        body: "Please mention draft PRs.",
+        created_at: "2026-01-03T05:00:00.000Z",
+        user_name: "Lucas",
+      },
+    ],
+    comments_summary: [
+      `- 2026-01-03T04:00:00.000Z Symphony: ${SYMPHONY_RUN_REPORT_MARKER}\nSymphony run completed.`,
+      "- 2026-01-03T05:00:00.000Z Lucas: Please mention draft PRs.",
+    ].join("\n"),
+    feedback_since_last_run: [
+      {
+        id: "comment-2",
+        body: "Please mention draft PRs.",
+        created_at: "2026-01-03T05:00:00.000Z",
+        user_name: "Lucas",
+      },
+    ],
+    feedback_since_last_run_summary: "- 2026-01-03T05:00:00.000Z Lucas: Please mention draft PRs.",
     created_at: "2026-01-02T03:04:05.000Z",
     updated_at: "2026-01-03T03:04:05.000Z",
   });
+});
+
+test("feedbackSinceLastRun returns only comments after the latest Symphony report marker", () => {
+  const comments = [
+    { id: "1", body: "old feedback", created_at: "2026-01-01T00:00:00.000Z", user_name: "Lucas" },
+    { id: "2", body: `${SYMPHONY_RUN_REPORT_MARKER}\ncompleted`, created_at: "2026-01-01T01:00:00.000Z", user_name: "Symphony" },
+    { id: "3", body: "first follow-up", created_at: "2026-01-01T02:00:00.000Z", user_name: "Lucas" },
+    { id: "4", body: "second follow-up", created_at: "2026-01-01T03:00:00.000Z", user_name: "Lucas" },
+  ];
+
+  assert.deepEqual(feedbackSinceLastRun(comments).map((comment) => comment.body), ["first follow-up", "second follow-up"]);
 });
 
 function linearIssue(fields: { id: string; identifier: string; title: string; state: string }): JsonMap {
@@ -156,5 +212,6 @@ function linearIssue(fields: { id: string; identifier: string; title: string; st
     labels: { nodes: [{ name: "codex" }] },
     relations: { nodes: [] },
     inverseRelations: { nodes: [] },
+    comments: { nodes: [] },
   };
 }

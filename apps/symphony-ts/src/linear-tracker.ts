@@ -1,6 +1,8 @@
 import { LinearClient, type LinearGraphqlClient } from "./linear-client.ts";
-import type { EffectiveConfig, Issue, JsonMap, Tracker } from "./types.ts";
+import type { EffectiveConfig, Issue, IssueComment, JsonMap, Tracker } from "./types.ts";
 import { parseIsoOrNull } from "./util.ts";
+
+export const SYMPHONY_RUN_REPORT_MARKER = "<!-- symphony:run-report -->";
 
 interface PageInfo {
   hasNextPage: boolean;
@@ -31,15 +33,19 @@ export class LinearTracker implements Tracker {
     if (issueIds.length === 0) {
       return [];
     }
-    const query = `query SymphonyIssueStates($ids: [ID!]!, $first: Int!) {
+    const query = `query SymphonyIssueStates($ids: [ID!]!, $first: Int!, $commentsFirst: Int!) {
   issues(first: $first, filter: { id: { in: $ids } }) {
     nodes {
       ${issueFields()}
     }
   }
 }`;
-    const response = await this.client.query(query, { ids: issueIds, first: Math.max(issueIds.length, 1) });
-    return nodesAt(response.data, ["issues", "nodes"]).map(normalizeLinearIssue).filter((issue): issue is Issue => issue !== null);
+    const response = await this.client.query(query, {
+      ids: issueIds,
+      first: Math.max(issueIds.length, 1),
+      commentsFirst: this.config.tracker.commentsLimit,
+    });
+    return nodesAt(response.data, ["issues", "nodes"]).map((raw) => normalizeLinearIssue(raw, this.config.tracker.feedbackMaxChars)).filter((issue): issue is Issue => issue !== null);
   }
 
   private async fetchIssuesPageByPage(stateNames: string[], limit: number): Promise<Issue[]> {
@@ -51,7 +57,7 @@ export class LinearTracker implements Tracker {
       const { query, variables } = this.buildIssuesQuery(stateNames, first, after);
       const response = await this.client.query(query, variables);
       const pageIssues = nodesAt(response.data, ["issues", "nodes"])
-        .map(normalizeLinearIssue)
+        .map((raw) => normalizeLinearIssue(raw, this.config.tracker.feedbackMaxChars))
         .filter((issue): issue is Issue => issue !== null);
       issues.push(...pageIssues);
 
@@ -69,9 +75,9 @@ export class LinearTracker implements Tracker {
   }
 
   private buildIssuesQuery(stateNames: string[], first: number, after: string | null): { query: string; variables: JsonMap } {
-    const variableDefinitions = ["$first: Int!", "$after: String", "$stateNames: [String!]!"];
+    const variableDefinitions = ["$first: Int!", "$after: String", "$stateNames: [String!]!", "$commentsFirst: Int!"];
     const filterParts = ["state: { name: { in: $stateNames } }"];
-    const variables: JsonMap = { first, after, stateNames };
+    const variables: JsonMap = { first, after, stateNames, commentsFirst: this.config.tracker.commentsLimit };
 
     if (this.config.tracker.teamKey) {
       variableDefinitions.push("$teamKey: String!");
@@ -116,11 +122,12 @@ function issueFields(): string {
       updatedAt
       state { name }
       labels { nodes { name } }
+      comments(first: $commentsFirst) { nodes { id body createdAt user { name displayName } } }
       relations { nodes { type relatedIssue { id identifier state { name } } issue { id identifier state { name } } } }
       inverseRelations { nodes { type relatedIssue { id identifier state { name } } issue { id identifier state { name } } } }`;
 }
 
-export function normalizeLinearIssue(raw: unknown): Issue | null {
+export function normalizeLinearIssue(raw: unknown, feedbackMaxChars = 4000): Issue | null {
   if (!isObject(raw)) {
     return null;
   }
@@ -131,6 +138,9 @@ export function normalizeLinearIssue(raw: unknown): Issue | null {
   if (!id || !identifier || !title || !state) {
     return null;
   }
+
+  const comments = normalizeComments(raw.comments);
+  const feedback = feedbackSinceLastRun(comments, feedbackMaxChars);
 
   return {
     id,
@@ -143,9 +153,71 @@ export function normalizeLinearIssue(raw: unknown): Issue | null {
     url: stringValue(raw.url),
     labels: connectionNodes(raw.labels).map((label) => stringValue(label.name)).filter((label): label is string => label !== null).map((label) => label.toLowerCase()),
     blocked_by: blockedBy(raw),
+    comments,
+    comments_summary: summarizeComments(comments, feedbackMaxChars),
+    feedback_since_last_run: feedback,
+    feedback_since_last_run_summary: summarizeComments(feedback, feedbackMaxChars),
     created_at: parseIsoOrNull(raw.createdAt ?? raw.created_at),
     updated_at: parseIsoOrNull(raw.updatedAt ?? raw.updated_at),
   };
+}
+
+export function feedbackSinceLastRun(comments: IssueComment[], maxChars = 4000): IssueComment[] {
+  let startIndex = 0;
+  for (let index = comments.length - 1; index >= 0; index -= 1) {
+    if (comments[index]!.body.includes(SYMPHONY_RUN_REPORT_MARKER)) {
+      startIndex = index + 1;
+      break;
+    }
+  }
+
+  const feedback: IssueComment[] = [];
+  let total = 0;
+  for (const comment of comments.slice(startIndex)) {
+    if (comment.body.includes(SYMPHONY_RUN_REPORT_MARKER)) {
+      continue;
+    }
+    const remaining = Math.max(maxChars - total, 0);
+    if (remaining <= 0) break;
+    const body = comment.body.length > remaining ? `${comment.body.slice(0, Math.max(remaining - 15, 0))}\n[truncated]` : comment.body;
+    total += body.length;
+    feedback.push({ ...comment, body });
+  }
+  return feedback;
+}
+
+function normalizeComments(value: unknown): IssueComment[] {
+  return connectionNodes(value)
+    .map((comment) => {
+      const id = stringValue(comment.id);
+      const body = stringValue(comment.body);
+      if (!id || !body) {
+        return null;
+      }
+      const user = isObject(comment.user) ? comment.user : {};
+      return {
+        id,
+        body,
+        created_at: parseIsoOrNull(comment.createdAt ?? comment.created_at),
+        user_name: stringValue(user.displayName) ?? stringValue(user.name),
+      };
+    })
+    .filter((comment): comment is IssueComment => comment !== null)
+    .sort((left, right) => timestampMs(left.created_at) - timestampMs(right.created_at));
+}
+
+function summarizeComments(comments: IssueComment[], maxChars: number): string {
+  const summary = comments
+    .map((comment) => {
+      const author = comment.user_name ?? "Unknown";
+      const timestamp = comment.created_at ?? "unknown time";
+      return `- ${timestamp} ${author}: ${comment.body}`;
+    })
+    .join("\n");
+  if (summary.length <= maxChars) {
+    return summary;
+  }
+  return `${summary.slice(0, Math.max(maxChars - 15, 0))}\n[truncated]`;
 }
 
 function blockedBy(raw: JsonMap): Issue["blocked_by"] {
@@ -209,4 +281,8 @@ function stringValue(value: unknown): string | null {
 
 function isObject(value: unknown): value is JsonMap {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function timestampMs(value: string | null): number {
+  return value ? Date.parse(value) || 0 : 0;
 }

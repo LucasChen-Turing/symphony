@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
 import { resolveConfig } from "../src/config.ts";
+import { SYMPHONY_RUN_REPORT_MARKER } from "../src/linear-tracker.ts";
 import { LinearWriteback } from "../src/linear-writeback.ts";
 import { ConsoleLogger } from "../src/logger.ts";
 import type { Issue, JsonMap } from "../src/types.ts";
@@ -40,7 +41,7 @@ test("LinearWriteback comments and moves the issue to review status", async () =
 
   assert.equal(client.calls.length, 3);
   assert.match(client.calls[0]!.query, /commentCreate/);
-  assert.deepEqual(client.calls[0]!.variables, { issueId: "issue-1", body: "done" });
+  assert.deepEqual(client.calls[0]!.variables, { issueId: "issue-1", body: `${SYMPHONY_RUN_REPORT_MARKER}\ndone` });
   assert.match(client.calls[1]!.query, /workflowStates/);
   assert.deepEqual(client.calls[1]!.variables, { teamKey: "SYM", statusName: "AI Needs Review" });
   assert.match(client.calls[2]!.query, /issueUpdate/);
@@ -59,6 +60,10 @@ function issue(): Issue {
     url: null,
     labels: [],
     blocked_by: [],
+    comments: [],
+    comments_summary: "",
+    feedback_since_last_run: [],
+    feedback_since_last_run_summary: "",
     created_at: null,
     updated_at: null,
   };

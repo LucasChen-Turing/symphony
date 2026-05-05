@@ -6,6 +6,13 @@ export interface IssueBlocker {
   state: string | null;
 }
 
+export interface IssueComment {
+  id: string;
+  body: string;
+  created_at: string | null;
+  user_name: string | null;
+}
+
 export interface Issue {
   id: string;
   identifier: string;
@@ -17,6 +24,10 @@ export interface Issue {
   url: string | null;
   labels: string[];
   blocked_by: IssueBlocker[];
+  comments: IssueComment[];
+  comments_summary: string;
+  feedback_since_last_run: IssueComment[];
+  feedback_since_last_run_summary: string;
   created_at: string | null;
   updated_at: string | null;
 }
@@ -39,6 +50,8 @@ export interface EffectiveConfig {
     terminalStates: string[];
     labels: string[];
     limit: number;
+    commentsLimit: number;
+    feedbackMaxChars: number;
     mockIssues: Issue[];
   };
   polling: {

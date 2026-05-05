@@ -1,4 +1,5 @@
 import { LinearClient, type LinearGraphqlClient } from "./linear-client.ts";
+import { SYMPHONY_RUN_REPORT_MARKER } from "./linear-tracker.ts";
 import type { EffectiveConfig, Issue, JsonMap, Logger } from "./types.ts";
 
 export class LinearWriteback {
@@ -21,13 +22,13 @@ export class LinearWriteback {
 
   async markReview(issue: Issue, body: string): Promise<void> {
     if (!this.enabled()) return;
-    await this.addComment(issue, body);
+    await this.addComment(issue, withRunReportMarker(body));
     await this.updateStatusIfConfigured(issue, this.config.linear.reviewStatus);
   }
 
   async markFailed(issue: Issue, body: string): Promise<void> {
     if (!this.enabled()) return;
-    await this.addComment(issue, body);
+    await this.addComment(issue, withRunReportMarker(body));
     await this.updateStatusIfConfigured(issue, this.config.linear.failedStatus);
   }
 
@@ -126,4 +127,8 @@ function nodesAt(data: JsonMap | undefined, path: string[]): JsonMap[] {
 
 function isObject(value: unknown): value is JsonMap {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function withRunReportMarker(body: string): string {
+  return body.includes(SYMPHONY_RUN_REPORT_MARKER) ? body : `${SYMPHONY_RUN_REPORT_MARKER}\n${body}`;
 }

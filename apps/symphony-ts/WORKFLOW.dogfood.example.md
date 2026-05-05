@@ -13,6 +13,8 @@ tracker:
   labels:
     - codex
   limit: 1
+  comments_limit: 50
+  feedback_max_chars: 4000
 
 workspace:
   root: ./.workspaces
@@ -65,9 +67,13 @@ Title:
 Description:
 {{ issue.description }}
 
+Recent human feedback since the last Symphony run:
+{{ issue.feedback_since_last_run_summary }}
+
 Rules:
 - Work only inside this repository.
 - Keep the change minimal and directly related to the issue.
+- If recent human feedback is present, treat it as the latest instruction for this run.
 - Run the configured validation command indirectly by finishing the task; Symphony will run validation after your turn.
 - Do not push, commit, create pull requests, or update Linear yourself. Symphony performs the handoff after your turn completes.
 - Summarize important implementation notes in your final response.
