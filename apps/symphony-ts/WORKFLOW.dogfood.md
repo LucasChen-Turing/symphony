@@ -22,7 +22,7 @@ git:
   repo: https://github.com/LucasChen-Turing/symphony.git
   allowed_repos:
     - https://github.com/LucasChen-Turing/symphony.git
-  base_branch: main
+  base_branch: lucas/build-symphony-app
   branch_prefix: symphony
   validation_command: cd apps/symphony-ts && npm test && npm run build
   commit_author_name: Symphony
