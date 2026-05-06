@@ -578,6 +578,7 @@ function retryToIssue(retry: RetryEntry): Issue {
     priority: null,
     state: "Todo",
     branch_name: null,
+    parent: null,
     url: null,
     labels: [],
     blocked_by: [],

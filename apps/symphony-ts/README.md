@@ -123,6 +123,7 @@ git:
     - git@github.com:YOUR_ACCOUNT_OR_ORG/symphony.git
   base_branch: main
   branch_prefix: symphony
+  subissue_base: parent_issue_branch
   validation_command: npm test && npm run build
   commit_author_name: Symphony
   commit_author_email: symphony@example.local
@@ -144,6 +145,8 @@ Behavior:
 - `git.enabled` clones only the configured `git.repo` into `<workspace>/<issue>/repo`.
 - `git.allowed_repos` is an explicit allow-list. If present, `git.repo` must match exactly.
 - Symphony checks out a branch like `symphony/SYM-5-title-slug`; it refuses protected names such as `main` and `master`.
+- `git.subissue_base: parent_issue_branch` is experimental and opt-in. When a Linear issue has a parent, Symphony looks for an existing remote branch like `symphony/PARENT-1-*`, creates the child issue branch from it, and opens the child PR against that parent branch.
+- If the parent issue branch is not found, Symphony logs the fallback and uses `git.base_branch`.
 - The agent runs inside the cloned repo path, not the empty issue workspace.
 - `.symphony/` is added to the clone's local `.git/info/exclude` so prompts and logs are not committed.
 - `git.validation_command` runs after the agent turn and before commit.
@@ -155,6 +158,13 @@ Behavior:
 - If `linear.writeback` is true, Symphony comments on the Linear issue and best-effort moves it to `AI Running`, `AI Needs Review`, or `AI Failed`.
 
 This flow intentionally does not merge PRs, close Linear issues, or push to `main`.
+
+Stacked PR limitations:
+
+- Parent branch selection only works for Linear sub-issues and only when `git.subissue_base` is set to `parent_issue_branch`.
+- The parent issue branch must already exist on the configured GitHub remote and use the configured `git.branch_prefix`.
+- If multiple matching parent branches exist, Symphony chooses the first branch name sorted lexicographically.
+- Symphony does not merge stacked PRs or update parent PR metadata automatically.
 
 ### Linear Plan Review Gate
 

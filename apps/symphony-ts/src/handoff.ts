@@ -110,7 +110,7 @@ export class HandoffManager {
       "--body",
       prBody(issue),
       "--base",
-      this.config.git.baseBranch,
+      workspace.prBaseBranch ?? this.config.git.baseBranch,
       "--head",
       workspace.branchName!,
     ];
@@ -125,6 +125,7 @@ export class HandoffManager {
     this.logger.info("github pr created", {
       issue_id: issue.id,
       issue_identifier: issue.identifier,
+      base_branch: workspace.prBaseBranch ?? this.config.git.baseBranch,
       pr_url: url,
     });
     return url;

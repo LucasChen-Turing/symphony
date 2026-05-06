@@ -68,6 +68,7 @@ export function resolveConfig(raw: JsonMap, workflowPath: string, env: NodeJS.Pr
       allowedRepos: stringListAt(git, "allowed_repos", []),
       baseBranch: stringAt(git, "base_branch") ?? "main",
       branchPrefix: stringAt(git, "branch_prefix") ?? "symphony",
+      subissueBase: subissueBaseAt(git, "subissue_base"),
       directory: stringAt(git, "directory") ?? "repo",
       validationCommand: nullableStringAt(git, "validation_command"),
       commitAuthorName: nullableStringAt(git, "commit_author_name"),
@@ -144,6 +145,9 @@ export function validateForDispatch(config: EffectiveConfig): void {
     if (config.git.branchPrefix.trim().length === 0) {
       throw new ConfigError("git.branch_prefix is required");
     }
+    if (config.git.subissueBase !== null && config.git.subissueBase !== "parent_issue_branch") {
+      throw new ConfigError("git.subissue_base must be parent_issue_branch when set");
+    }
     if (config.github.createPr && config.github.remote.trim().length === 0) {
       throw new ConfigError("github.remote is required");
     }
@@ -166,6 +170,10 @@ function stringAt(source: JsonMap, key: string): string | null {
 function nullableStringAt(source: JsonMap, key: string): string | null {
   const value = source[key];
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function subissueBaseAt(source: JsonMap, key: string): "parent_issue_branch" | null {
+  return source[key] === "parent_issue_branch" ? "parent_issue_branch" : null;
 }
 
 function booleanAt(source: JsonMap, key: string, fallback: boolean): boolean {
@@ -238,6 +246,7 @@ function normalizeIssue(entry: JsonMap, index: number): Issue | null {
     priority: Number.isInteger(entry.priority) ? Number(entry.priority) : null,
     state,
     branch_name: stringValue(entry.branch_name),
+    parent: normalizeParent(entry.parent),
     url: stringValue(entry.url),
     labels: Array.isArray(entry.labels)
       ? entry.labels.filter((label): label is string => typeof label === "string").map((label) => label.toLowerCase())
@@ -262,6 +271,22 @@ function normalizeIssue(entry: JsonMap, index: number): Issue | null {
     symphony_implementation_mode: false,
     created_at: parseIsoOrNull(entry.created_at),
     updated_at: parseIsoOrNull(entry.updated_at),
+  };
+}
+
+function normalizeParent(value: unknown): Issue["parent"] {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const parent = value as JsonMap;
+  const identifier = stringValue(parent.identifier);
+  if (!identifier) {
+    return null;
+  }
+  return {
+    id: stringValue(parent.id),
+    identifier,
+    title: stringValue(parent.title),
   };
 }
 

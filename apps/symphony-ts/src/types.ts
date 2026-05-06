@@ -21,6 +21,11 @@ export interface Issue {
   priority: number | null;
   state: string;
   branch_name: string | null;
+  parent: {
+    id: string | null;
+    identifier: string | null;
+    title: string | null;
+  } | null;
   url: string | null;
   labels: string[];
   blocked_by: IssueBlocker[];
@@ -78,6 +83,7 @@ export interface EffectiveConfig {
     allowedRepos: string[];
     baseBranch: string;
     branchPrefix: string;
+    subissueBase: "parent_issue_branch" | null;
     directory: string;
     validationCommand: string | null;
     commitAuthorName: string | null;
@@ -152,6 +158,7 @@ export interface GitWorkspace {
   workspacePath: string;
   runPath: string;
   branchName: string | null;
+  prBaseBranch: string | null;
   repoUrl: string | null;
 }
 
