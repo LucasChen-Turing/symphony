@@ -184,6 +184,9 @@ export class AgentRunner {
 }
 
 function runMode(config: EffectiveConfig, issue: Issue): RunMode {
+  if (issue.symphony_planning_mode) {
+    return "planning";
+  }
   const state = issue.state.trim().toLowerCase();
   if (config.linear.planningState && state === config.linear.planningState.trim().toLowerCase()) {
     return "planning";

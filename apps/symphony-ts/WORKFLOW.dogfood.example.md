@@ -5,6 +5,7 @@ tracker:
   team_key: SYM
   active_states:
     - Todo
+    - Plan Review
     - In Progress
   terminal_states:
     - Done
@@ -90,6 +91,7 @@ Rules:
 {% if issue.symphony_planning_mode %}
 Planning phase:
 - Produce only a concise implementation plan.
+- If human feedback after the latest plan is present, revise the plan to address it.
 - Do not edit files, run validation, commit, push, create pull requests, or update Linear.
 - End with the plan only.
 {% endif %}

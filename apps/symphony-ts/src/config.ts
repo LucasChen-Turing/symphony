@@ -251,18 +251,33 @@ function normalizeIssue(entry: JsonMap, index: number): Issue | null {
             state: stringValue(blocker.state),
           }))
       : [],
-    comments: [],
+    comments: normalizeMockComments(entry.comments),
     comments_summary: "",
     feedback_since_last_run: [],
     feedback_since_last_run_summary: "",
-    latest_symphony_plan: null,
-    plan_feedback_since_latest_plan: [],
-    plan_feedback_since_latest_plan_summary: "",
+    latest_symphony_plan: stringValue(entry.latest_symphony_plan),
+    plan_feedback_since_latest_plan: normalizeMockComments(entry.plan_feedback_since_latest_plan),
+    plan_feedback_since_latest_plan_summary: stringValue(entry.plan_feedback_since_latest_plan_summary) ?? "",
     symphony_planning_mode: false,
     symphony_implementation_mode: false,
     created_at: parseIsoOrNull(entry.created_at),
     updated_at: parseIsoOrNull(entry.updated_at),
   };
+}
+
+function normalizeMockComments(value: unknown): Issue["comments"] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .filter((comment): comment is JsonMap => typeof comment === "object" && comment !== null && !Array.isArray(comment))
+    .map((comment, index) => ({
+      id: stringValue(comment.id) ?? `comment-${index + 1}`,
+      body: stringValue(comment.body) ?? "",
+      created_at: parseIsoOrNull(comment.created_at),
+      user_name: stringValue(comment.user_name),
+    }))
+    .filter((comment) => comment.body.length > 0);
 }
 
 function stringValue(value: unknown): string | null {
