@@ -148,7 +148,8 @@ Behavior:
 - If changes exist and validation passes, Symphony commits them.
 - If `github.create_pr` is true, Symphony pushes the branch and runs `gh pr create`. PRs default to draft.
 - If the issue branch already exists on the remote, Symphony checks out that branch and continues from it instead of recreating the branch from `base_branch`.
-- If a PR already exists for the issue branch, Symphony reuses it instead of creating a duplicate PR.
+- If an open PR already exists for the issue branch, Symphony reuses it instead of creating a duplicate PR.
+- If no files changed, Symphony skips commit, push, and PR creation even when the issue has follow-up comments.
 - If `linear.writeback` is true, Symphony comments on the Linear issue and best-effort moves it to `AI Running`, `AI Needs Review`, or `AI Failed`.
 
 This flow intentionally does not merge PRs, close Linear issues, or push to `main`.
