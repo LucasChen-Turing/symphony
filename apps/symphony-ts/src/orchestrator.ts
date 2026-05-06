@@ -1,5 +1,7 @@
 import { AgentRunner } from "./agent-runner.ts";
 import { validateForDispatch } from "./config.ts";
+import { LinearWriteback } from "./linear-writeback.ts";
+import { classifyPlanReviewFeedback } from "./plan-review.ts";
 import type { AgentEvent, CodexTotals, EffectiveConfig, Issue, Logger, RunAttempt, RunningRow, Tracker } from "./types.ts";
 import { createTracker } from "./tracker.ts";
 import { errorMessage, normalizeState, sleep } from "./util.ts";
@@ -170,11 +172,26 @@ export class Orchestrator {
     }
 
     try {
-      const candidates = await this.requireTracker().fetchCandidateIssues();
+      const candidates = await this.fetchCandidateIssues();
       await this.dispatchCandidates(candidates, null);
     } catch (error) {
       this.logger.error("candidate fetch failed", { error: errorMessage(error) });
     }
+  }
+
+  private async fetchCandidateIssues(): Promise<Issue[]> {
+    if (!this.config?.linear.planReviewStatus) {
+      return this.requireTracker().fetchCandidateIssues();
+    }
+    const [activeIssues, planReviewIssues] = await Promise.all([
+      this.requireTracker().fetchCandidateIssues(),
+      this.requireTracker().fetchIssuesByStates([this.config.linear.planReviewStatus]),
+    ]);
+    const byId = new Map<string, Issue>();
+    for (const issue of [...activeIssues, ...planReviewIssues]) {
+      byId.set(issue.id, issue);
+    }
+    return Array.from(byId.values());
   }
 
   private scheduleNextTick(): void {
@@ -243,7 +260,6 @@ export class Orchestrator {
     try {
       const refreshed = await this.requireTracker().fetchIssueStatesByIds(Array.from(this.running.keys()));
       const byId = new Map(refreshed.map((issue) => [issue.id, issue]));
-      const active = stateSet(this.config.tracker.activeStates);
       const terminal = stateSet(this.config.tracker.terminalStates);
       for (const [issueId, running] of this.running) {
         const issue = byId.get(issueId);
@@ -251,6 +267,10 @@ export class Orchestrator {
           continue;
         }
         const state = normalizeState(issue.state);
+        const active = stateSet(this.config.tracker.activeStates);
+        if (running.issue.symphony_planning_mode && this.config.linear.planReviewStatus) {
+          active.add(normalizeState(this.config.linear.planReviewStatus));
+        }
         if (terminal.has(state)) {
           running.abortController.abort();
           this.releaseRunning(issueId);
@@ -282,11 +302,17 @@ export class Orchestrator {
     }
     const sorted = candidates
       .filter((issue) => specificIssueId === null || issue.id === specificIssueId)
-      .filter((issue) => this.isEligible(issue))
       .sort(compareIssues);
 
     let dispatched = false;
     for (const issue of sorted) {
+      if (await this.handlePlanReviewIssue(issue)) {
+        dispatched = true;
+        continue;
+      }
+      if (!this.isEligible(issue)) {
+        continue;
+      }
       if (this.availableGlobalSlots() <= 0) {
         break;
       }
@@ -297,6 +323,36 @@ export class Orchestrator {
       dispatched = true;
     }
     return dispatched;
+  }
+
+  private async handlePlanReviewIssue(issue: Issue): Promise<boolean> {
+    if (!this.config?.linear.planReviewStatus) {
+      return false;
+    }
+    if (normalizeState(issue.state) !== normalizeState(this.config.linear.planReviewStatus)) {
+      return false;
+    }
+    if (this.running.has(issue.id) || this.claimed.has(issue.id)) {
+      return false;
+    }
+
+    const intent = classifyPlanReviewFeedback(issue.plan_feedback_since_latest_plan);
+    if (intent === "approve") {
+      await new LinearWriteback(this.config, this.logger).markPlanApproved(issue);
+      this.logger.info("plan review approved; issue promoted for implementation", {
+        issue_id: issue.id,
+        issue_identifier: issue.identifier,
+      });
+      return true;
+    }
+    if (intent !== "changes") {
+      return false;
+    }
+    if (this.availableGlobalSlots() <= 0 || !this.hasStateSlot(issue.state)) {
+      return false;
+    }
+    this.dispatchIssue({ ...issue, symphony_planning_mode: true, symphony_implementation_mode: false }, null);
+    return true;
   }
 
   private dispatchIssue(issue: Issue, attempt: number | null): void {
@@ -337,7 +393,11 @@ export class Orchestrator {
         const found = refreshed.find((i) => i.id === issue.id);
         if (!found) return false;
         const state = normalizeState(found.state);
-        return stateSet(config.tracker.activeStates).has(state) && !stateSet(config.tracker.terminalStates).has(state);
+        const active = stateSet(config.tracker.activeStates);
+        if (issue.symphony_planning_mode && config.linear.planReviewStatus) {
+          active.add(normalizeState(config.linear.planReviewStatus));
+        }
+        return active.has(state) && !stateSet(config.tracker.terminalStates).has(state);
       } catch {
         return false;
       }
@@ -432,8 +492,11 @@ export class Orchestrator {
     this.claimed.delete(issueId);
     try {
       await this.refreshConfig();
-      const candidates = await this.requireTracker().fetchCandidateIssues();
+      const candidates = await this.fetchCandidateIssues();
       const issue = candidates.find((candidate) => candidate.id === issueId);
+      if (issue && await this.handlePlanReviewIssue(issue)) {
+        return;
+      }
       if (!issue || !this.isEligible(issue)) {
         this.claimed.delete(issueId);
         this.logger.info("retry released; issue no longer eligible", {

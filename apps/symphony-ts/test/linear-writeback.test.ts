@@ -72,6 +72,32 @@ test("LinearWriteback comments with a plan marker and moves the issue to plan re
   assert.deepEqual(client.calls[2]!.variables, { issueId: "issue-1", stateId: "state-plan-review" });
 });
 
+test("LinearWriteback comments and moves approved plans to implementation", async () => {
+  const config = resolveConfig({
+    tracker: {
+      kind: "linear",
+      team_key: "SYM",
+      api_key: "$LINEAR_API_KEY",
+    },
+    linear: {
+      writeback: true,
+      implementation_state: "In Progress",
+    },
+  }, path.join(process.cwd(), "WORKFLOW.md"), { LINEAR_API_KEY: "secret" });
+  const client = new MockLinearClient();
+  client.responses[1] = { data: { workflowStates: { nodes: [{ id: "state-in-progress", name: "In Progress" }] } } };
+
+  await new LinearWriteback(config, new ConsoleLogger(), client).markPlanApproved(issue());
+
+  assert.equal(client.calls.length, 3);
+  assert.deepEqual(client.calls[0]!.variables, {
+    issueId: "issue-1",
+    body: `${SYMPHONY_RUN_REPORT_MARKER}\nPlan approved. Moving to implementation.`,
+  });
+  assert.deepEqual(client.calls[1]!.variables, { teamKey: "SYM", statusName: "In Progress" });
+  assert.deepEqual(client.calls[2]!.variables, { issueId: "issue-1", stateId: "state-in-progress" });
+});
+
 function issue(): Issue {
   return {
     id: "issue-1",
