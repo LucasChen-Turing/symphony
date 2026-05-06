@@ -70,6 +70,44 @@ test("resolves Linear read-only extension config", async () => {
   validateForDispatch(config);
 });
 
+test("resolves Linear planning gate config", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "symphony-ts-plan-config-"));
+  const workflowPath = path.join(dir, "WORKFLOW.md");
+  const config = resolveConfig({
+    tracker: {
+      kind: "linear",
+      team_key: "SYM",
+      active_states: ["Todo", "In Progress"],
+    },
+    linear: {
+      planning_state: "Todo",
+      plan_review_status: "Plan Review",
+      implementation_state: "In Progress",
+    },
+  }, workflowPath, { LINEAR_API_KEY: "linear-secret" });
+
+  assert.equal(config.linear.planningState, "Todo");
+  assert.equal(config.linear.planReviewStatus, "Plan Review");
+  assert.equal(config.linear.implementationState, "In Progress");
+  validateForDispatch(config);
+});
+
+test("renderPrompt can include approved plan context for implementation mode", () => {
+  const rendered = renderPrompt(`{% if issue.symphony_implementation_mode %}Plan:
+{{ issue.latest_symphony_plan }}
+Feedback:
+{{ issue.plan_feedback_since_latest_plan_summary }}{% endif %}`, {
+    ...sampleIssue(),
+    state: "In Progress",
+    latest_symphony_plan: "1. Touch config\n2. Add tests",
+    plan_feedback_since_latest_plan_summary: "- 2026-05-06 Reviewer: Keep it small.",
+    symphony_implementation_mode: true,
+  }, null);
+
+  assert.match(rendered, /Touch config/);
+  assert.match(rendered, /Keep it small/);
+});
+
 test("renderPrompt fails on unknown variables", () => {
   assert.throws(
     () => renderPrompt("Hello {{ issue.nope }}", sampleIssue(), null),
@@ -101,6 +139,11 @@ function sampleIssue(): Issue {
     comments_summary: "",
     feedback_since_last_run: [],
     feedback_since_last_run_summary: "",
+    latest_symphony_plan: null,
+    plan_feedback_since_latest_plan: [],
+    plan_feedback_since_latest_plan_summary: "",
+    symphony_planning_mode: false,
+    symphony_implementation_mode: false,
     created_at: null,
     updated_at: null,
   };

@@ -10,6 +10,9 @@ import { renderPrompt } from "./prompt.ts";
 import { errorMessage, isPathInside } from "./util.ts";
 import { WorkspaceManager } from "./workspace.ts";
 
+type RunMode = "planning" | "implementation";
+type AgentResult = { status: "Succeeded" | "Failed" | "TimedOut"; error: string | null; output: string | null };
+
 export interface AgentRunnerOptions {
   signal?: AbortSignal;
   onEvent?: (event: AgentEvent) => void;
@@ -38,10 +41,13 @@ export class AgentRunner {
       workspacePath = workspace.path;
       const gitWorkspace = await new GitWorkspaceManager(this.config, this.logger).prepare(workspacePath, issue);
       validateLaunchCwd(workspacePath, gitWorkspace.runPath);
-      await new LinearWriteback(this.config, this.logger).markRunning(issue);
+      const mode = runMode(this.config, issue);
+      if (mode === "implementation") {
+        await new LinearWriteback(this.config, this.logger).markRunning(issue);
+      }
       await workspaceManager.beforeRun(gitWorkspace.runPath);
       options.onEvent?.({ event: "workspace_ready", timestamp: new Date().toISOString(), workspace_path: gitWorkspace.runPath });
-      const prompt = renderPrompt(this.configPromptTemplate(), issue, attempt);
+      const prompt = renderPrompt(this.configPromptTemplate(), issueForMode(issue, mode), attempt);
       await fs.mkdir(path.join(workspacePath, ".symphony"), { recursive: true });
       await fs.writeFile(path.join(workspacePath, ".symphony", "prompt.md"), prompt, "utf8");
       if (gitWorkspace.runPath !== workspacePath) {
@@ -51,7 +57,9 @@ export class AgentRunner {
       const result = this.config.codex.protocol === "app_server"
         ? await new CodexAppServerClient(this.config, this.logger).run(issue, gitWorkspace.runPath, prompt, options)
         : await this.launchCommand(issue, gitWorkspace.runPath, prompt, options);
-      if (result.status === "Succeeded") {
+      if (result.status === "Succeeded" && mode === "planning") {
+        await new LinearWriteback(this.config, this.logger).markPlan(issue, planComment(issue, result.output));
+      } else if (result.status === "Succeeded") {
         const handoff = await new HandoffManager(this.config, this.logger).complete(issue, gitWorkspace);
         await new LinearWriteback(this.config, this.logger).markReview(issue, successComment(issue, handoff));
       } else {
@@ -93,7 +101,7 @@ export class AgentRunner {
     cwd: string,
     prompt: string,
     options: AgentRunnerOptions,
-  ): Promise<{ status: "Succeeded" | "Failed" | "TimedOut"; error: string | null }> {
+  ): Promise<AgentResult> {
     await fs.mkdir(path.join(cwd, ".symphony", "logs"), { recursive: true });
     const logPath = path.join(cwd, ".symphony", "logs", `${new Date().toISOString().replace(/[:.]/g, "-")}.log`);
     const logFile = await fs.open(logPath, "a");
@@ -150,7 +158,7 @@ export class AgentRunner {
           await logFile.appendFile(Buffer.concat(logChunks));
         }
         await logFile.close();
-        resolve({ status: "Failed", error: error.message });
+        resolve({ status: "Failed", error: error.message, output: null });
       });
       child.on("close", async (code, signal) => {
         clearTimeout(timeout);
@@ -159,19 +167,49 @@ export class AgentRunner {
           await logFile.appendFile(Buffer.concat(logChunks));
         }
         await logFile.close();
+        const output = logChunks.length > 0 ? Buffer.concat(logChunks).toString("utf8").trim().slice(0, 4000) || null : null;
         if (timedOut) {
           options.onEvent?.({ event: "turn_failed", timestamp: new Date().toISOString(), session_id: sessionId });
-          resolve({ status: "TimedOut", error: `turn timed out after ${this.config.codex.turnTimeoutMs}ms` });
+          resolve({ status: "TimedOut", error: `turn timed out after ${this.config.codex.turnTimeoutMs}ms`, output });
         } else if (code === 0) {
           options.onEvent?.({ event: "turn_completed", timestamp: new Date().toISOString(), session_id: sessionId });
-          resolve({ status: "Succeeded", error: null });
+          resolve({ status: "Succeeded", error: null, output });
         } else {
           options.onEvent?.({ event: "turn_failed", timestamp: new Date().toISOString(), session_id: sessionId });
-          resolve({ status: "Failed", error: `command exited code=${code} signal=${signal}` });
+          resolve({ status: "Failed", error: `command exited code=${code} signal=${signal}`, output });
         }
       });
     });
   }
+}
+
+function runMode(config: EffectiveConfig, issue: Issue): RunMode {
+  const state = issue.state.trim().toLowerCase();
+  if (config.linear.planningState && state === config.linear.planningState.trim().toLowerCase()) {
+    return "planning";
+  }
+  return "implementation";
+}
+
+function issueForMode(issue: Issue, mode: RunMode): Issue {
+  return {
+    ...issue,
+    symphony_planning_mode: mode === "planning",
+    symphony_implementation_mode: mode === "implementation",
+  };
+}
+
+function planComment(issue: Issue, output: string | null): string {
+  const plan = output && output.trim().length > 0
+    ? output.trim()
+    : [
+        `Plan for ${issue.identifier}: ${issue.title}`,
+        "",
+        "1. Inspect the relevant code and tests.",
+        "2. Implement the smallest directly related change.",
+        "3. Run the configured validation command and summarize the result.",
+      ].join("\n");
+  return plan.slice(0, 4000);
 }
 
 function validateLaunchCwd(workspaceRoot: string, workspacePath: string): void {

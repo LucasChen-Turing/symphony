@@ -3,6 +3,7 @@ import type { EffectiveConfig, Issue, IssueComment, JsonMap, Tracker } from "./t
 import { parseIsoOrNull } from "./util.ts";
 
 export const SYMPHONY_RUN_REPORT_MARKER = "<!-- symphony:run-report -->";
+export const SYMPHONY_PLAN_MARKER = "<!-- symphony:plan -->";
 
 interface PageInfo {
   hasNextPage: boolean;
@@ -141,6 +142,8 @@ export function normalizeLinearIssue(raw: unknown, feedbackMaxChars = 4000): Iss
 
   const comments = normalizeComments(raw.comments);
   const feedback = feedbackSinceLastRun(comments, feedbackMaxChars);
+  const latestPlan = latestSymphonyPlan(comments);
+  const planFeedback = feedbackSinceLatestPlan(comments, feedbackMaxChars);
 
   return {
     id,
@@ -157,6 +160,11 @@ export function normalizeLinearIssue(raw: unknown, feedbackMaxChars = 4000): Iss
     comments_summary: summarizeComments(comments, feedbackMaxChars),
     feedback_since_last_run: feedback,
     feedback_since_last_run_summary: summarizeComments(feedback, feedbackMaxChars),
+    latest_symphony_plan: latestPlan,
+    plan_feedback_since_latest_plan: planFeedback,
+    plan_feedback_since_latest_plan_summary: summarizeComments(planFeedback, feedbackMaxChars),
+    symphony_planning_mode: false,
+    symphony_implementation_mode: false,
     created_at: parseIsoOrNull(raw.createdAt ?? raw.created_at),
     updated_at: parseIsoOrNull(raw.updatedAt ?? raw.updated_at),
   };
@@ -174,7 +182,44 @@ export function feedbackSinceLastRun(comments: IssueComment[], maxChars = 4000):
   const feedback: IssueComment[] = [];
   let total = 0;
   for (const comment of comments.slice(startIndex)) {
-    if (comment.body.includes(SYMPHONY_RUN_REPORT_MARKER)) {
+    if (comment.body.includes(SYMPHONY_RUN_REPORT_MARKER) || comment.body.includes(SYMPHONY_PLAN_MARKER)) {
+      continue;
+    }
+    const remaining = Math.max(maxChars - total, 0);
+    if (remaining <= 0) break;
+    const body = comment.body.length > remaining ? `${comment.body.slice(0, Math.max(remaining - 15, 0))}\n[truncated]` : comment.body;
+    total += body.length;
+    feedback.push({ ...comment, body });
+  }
+  return feedback;
+}
+
+export function latestSymphonyPlan(comments: IssueComment[]): string | null {
+  for (let index = comments.length - 1; index >= 0; index -= 1) {
+    const body = comments[index]!.body;
+    if (body.includes(SYMPHONY_PLAN_MARKER)) {
+      return body.replace(SYMPHONY_PLAN_MARKER, "").trim() || null;
+    }
+  }
+  return null;
+}
+
+export function feedbackSinceLatestPlan(comments: IssueComment[], maxChars = 4000): IssueComment[] {
+  let startIndex = -1;
+  for (let index = comments.length - 1; index >= 0; index -= 1) {
+    if (comments[index]!.body.includes(SYMPHONY_PLAN_MARKER)) {
+      startIndex = index + 1;
+      break;
+    }
+  }
+  if (startIndex === -1) {
+    return [];
+  }
+
+  const feedback: IssueComment[] = [];
+  let total = 0;
+  for (const comment of comments.slice(startIndex)) {
+    if (comment.body.includes(SYMPHONY_PLAN_MARKER) || comment.body.includes(SYMPHONY_RUN_REPORT_MARKER)) {
       continue;
     }
     const remaining = Math.max(maxChars - total, 0);

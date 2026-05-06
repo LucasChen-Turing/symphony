@@ -28,13 +28,14 @@ export class CodexAppServerClient {
   private terminalError: string | null = null;
   private threadId: string | null = null;
   private turnId: string | null = null;
+  private readonly outputChunks: string[] = [];
 
   constructor(config: EffectiveConfig, logger: Logger) {
     this.config = config;
     this.logger = logger;
   }
 
-  async run(issue: Issue, cwd: string, prompt: string, options: CodexAppServerOptions = {}): Promise<{ status: "Succeeded" | "Failed" | "TimedOut"; error: string | null }> {
+  async run(issue: Issue, cwd: string, prompt: string, options: CodexAppServerOptions = {}): Promise<{ status: "Succeeded" | "Failed" | "TimedOut"; error: string | null; output: string | null }> {
     this.logger.info("codex app-server launching", {
       issue_id: issue.id,
       issue_identifier: issue.identifier,
@@ -64,14 +65,14 @@ export class CodexAppServerClient {
     const timeoutPromise = new Promise<{ status: "TimedOut"; error: string }>((resolve) => {
       turnTimer = setTimeout(() => {
         this.child?.kill("SIGTERM");
-        resolve({ status: "TimedOut", error: `turn timed out after ${this.config.codex.turnTimeoutMs}ms` });
+        resolve({ status: "TimedOut", error: `turn timed out after ${this.config.codex.turnTimeoutMs}ms`, output: this.output() });
       }, this.config.codex.turnTimeoutMs);
     });
 
     try {
       const result = await Promise.race([
         turnPromise,
-        exitPromise.then((error) => ({ status: "Failed" as const, error: error.message })),
+        exitPromise.then((error) => ({ status: "Failed" as const, error: error.message, output: this.output() })),
         timeoutPromise,
       ]);
       return result;
@@ -89,7 +90,7 @@ export class CodexAppServerClient {
     }
   }
 
-  private async runProtocol(issue: Issue, cwd: string, prompt: string, options: CodexAppServerOptions): Promise<{ status: "Succeeded" | "Failed"; error: string | null }> {
+  private async runProtocol(issue: Issue, cwd: string, prompt: string, options: CodexAppServerOptions): Promise<{ status: "Succeeded" | "Failed"; error: string | null; output: string | null }> {
     await this.request("initialize", {
       clientInfo: { name: "symphony-ts", title: "Symphony TS", version: "0.1.0" },
       capabilities: { experimentalApi: true },
@@ -117,7 +118,7 @@ export class CodexAppServerClient {
 
     while (turnCount < maxTurns) {
       if (options.signal?.aborted) {
-        return { status: "Failed", error: "cancelled" };
+        return { status: "Failed", error: "cancelled", output: this.output() };
       }
 
       const turnResponse = await this.request("turn/start", {
@@ -151,14 +152,14 @@ export class CodexAppServerClient {
 
       while (!this.terminalTurnStatus || this.terminalTurnId !== this.turnId) {
         if (options.signal?.aborted) {
-          return { status: "Failed", error: "cancelled" };
+          return { status: "Failed", error: "cancelled", output: this.output() };
         }
         await new Promise<void>((resolve) => setTimeout(resolve, 25));
       }
 
       if (this.terminalTurnStatus !== "completed") {
         options.onEvent?.({ event: "turn_failed", timestamp: new Date().toISOString(), session_id: sessionId });
-        return { status: "Failed", error: this.terminalError ?? this.terminalTurnStatus };
+        return { status: "Failed", error: this.terminalError ?? this.terminalTurnStatus, output: this.output() };
       }
 
       options.onEvent?.({ event: "turn_completed", timestamp: new Date().toISOString(), session_id: sessionId });
@@ -180,7 +181,7 @@ export class CodexAppServerClient {
       turnInput = "Continue working on the issue. Check the current state and complete any remaining work.";
     }
 
-    return { status: "Succeeded", error: null };
+    return { status: "Succeeded", error: null, output: this.output() };
   }
 
   private request(method: string, params: unknown): Promise<JsonMap> {
@@ -270,6 +271,7 @@ export class CodexAppServerClient {
     const method = String(message.method);
     const params = isObject(message.params) ? message.params : {};
     if (method === "turn/completed" || method === "turn/failed" || method === "turn/cancelled") {
+      this.captureOutput(params);
       const rawStatus = getString(params, ["turn", "status"]) ?? method.split("/")[1]!;
       this.terminalTurnId = getString(params, ["turn", "id"]) ?? this.turnId;
       this.terminalTurnStatus = rawStatus === "completed" ? "completed" : rawStatus === "cancelled" ? "cancelled" : "failed";
@@ -282,6 +284,7 @@ export class CodexAppServerClient {
       const usage = tokenUsage(params);
       options.onEvent?.({ event: method, timestamp: new Date().toISOString(), session_id: this.sessionId(), usage });
     } else {
+      this.captureOutput(params);
       options.onEvent?.({ event: method, timestamp: new Date().toISOString(), session_id: this.sessionId(), message: JSON.stringify(params).slice(0, 500) });
     }
   }
@@ -326,6 +329,19 @@ export class CodexAppServerClient {
   private sessionId(): string | null {
     return this.threadId && this.turnId ? `${this.threadId}-${this.turnId}` : null;
   }
+
+  private captureOutput(params: JsonMap): void {
+    for (const text of textValues(params)) {
+      if (text.trim().length > 0) {
+        this.outputChunks.push(text.trim());
+      }
+    }
+  }
+
+  private output(): string | null {
+    const joined = uniqueInOrder(this.outputChunks).join("\n\n").trim();
+    return joined.length > 0 ? joined.slice(0, 4000) : null;
+  }
 }
 
 function toolResponse(success: boolean, payload: unknown): JsonMap {
@@ -368,4 +384,35 @@ function getString(source: JsonMap, path: string[]): string | null {
 
 function isObject(value: unknown): value is JsonMap {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function textValues(value: unknown): string[] {
+  if (typeof value === "string") {
+    return [];
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => textValues(item));
+  }
+  if (!isObject(value)) {
+    return [];
+  }
+  const direct = typeof value.text === "string" ? [value.text] : [];
+  const body = typeof value.body === "string" ? [value.body] : [];
+  const content = "content" in value ? textValues(value.content) : [];
+  const items = "items" in value ? textValues(value.items) : [];
+  const item = "item" in value ? textValues(value.item) : [];
+  const turn = "turn" in value ? textValues(value.turn) : [];
+  return [...direct, ...body, ...content, ...items, ...item, ...turn];
+}
+
+function uniqueInOrder(values: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    if (!seen.has(value)) {
+      seen.add(value);
+      result.push(value);
+    }
+  }
+  return result;
 }

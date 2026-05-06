@@ -2,7 +2,14 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
 import { resolveConfig } from "../src/config.ts";
-import { LinearTracker, SYMPHONY_RUN_REPORT_MARKER, feedbackSinceLastRun, normalizeLinearIssue } from "../src/linear-tracker.ts";
+import {
+  LinearTracker,
+  SYMPHONY_PLAN_MARKER,
+  SYMPHONY_RUN_REPORT_MARKER,
+  feedbackSinceLastRun,
+  feedbackSinceLatestPlan,
+  normalizeLinearIssue,
+} from "../src/linear-tracker.ts";
 import type { JsonMap } from "../src/types.ts";
 
 class MockLinearClient {
@@ -127,6 +134,18 @@ test("normalizeLinearIssue maps Linear payload into the internal Issue shape", (
           createdAt: "2026-01-03T05:00:00.000Z",
           user: { displayName: "Lucas" },
         },
+        {
+          id: "comment-3",
+          body: `${SYMPHONY_PLAN_MARKER}\n1. Update config.\n2. Add tests.`,
+          createdAt: "2026-01-03T06:00:00.000Z",
+          user: { displayName: "Symphony" },
+        },
+        {
+          id: "comment-4",
+          body: "Keep the first version small.",
+          createdAt: "2026-01-03T07:00:00.000Z",
+          user: { displayName: "Lucas" },
+        },
       ],
     },
     inverseRelations: {
@@ -167,10 +186,24 @@ test("normalizeLinearIssue maps Linear payload into the internal Issue shape", (
         created_at: "2026-01-03T05:00:00.000Z",
         user_name: "Lucas",
       },
+      {
+        id: "comment-3",
+        body: `${SYMPHONY_PLAN_MARKER}\n1. Update config.\n2. Add tests.`,
+        created_at: "2026-01-03T06:00:00.000Z",
+        user_name: "Symphony",
+      },
+      {
+        id: "comment-4",
+        body: "Keep the first version small.",
+        created_at: "2026-01-03T07:00:00.000Z",
+        user_name: "Lucas",
+      },
     ],
     comments_summary: [
       `- 2026-01-03T04:00:00.000Z Symphony: ${SYMPHONY_RUN_REPORT_MARKER}\nSymphony run completed.`,
       "- 2026-01-03T05:00:00.000Z Lucas: Please mention draft PRs.",
+      `- 2026-01-03T06:00:00.000Z Symphony: ${SYMPHONY_PLAN_MARKER}\n1. Update config.\n2. Add tests.`,
+      "- 2026-01-03T07:00:00.000Z Lucas: Keep the first version small.",
     ].join("\n"),
     feedback_since_last_run: [
       {
@@ -179,11 +212,43 @@ test("normalizeLinearIssue maps Linear payload into the internal Issue shape", (
         created_at: "2026-01-03T05:00:00.000Z",
         user_name: "Lucas",
       },
+      {
+        id: "comment-4",
+        body: "Keep the first version small.",
+        created_at: "2026-01-03T07:00:00.000Z",
+        user_name: "Lucas",
+      },
     ],
-    feedback_since_last_run_summary: "- 2026-01-03T05:00:00.000Z Lucas: Please mention draft PRs.",
+    feedback_since_last_run_summary: [
+      "- 2026-01-03T05:00:00.000Z Lucas: Please mention draft PRs.",
+      "- 2026-01-03T07:00:00.000Z Lucas: Keep the first version small.",
+    ].join("\n"),
+    latest_symphony_plan: "1. Update config.\n2. Add tests.",
+    plan_feedback_since_latest_plan: [
+      {
+        id: "comment-4",
+        body: "Keep the first version small.",
+        created_at: "2026-01-03T07:00:00.000Z",
+        user_name: "Lucas",
+      },
+    ],
+    plan_feedback_since_latest_plan_summary: "- 2026-01-03T07:00:00.000Z Lucas: Keep the first version small.",
+    symphony_planning_mode: false,
+    symphony_implementation_mode: false,
     created_at: "2026-01-02T03:04:05.000Z",
     updated_at: "2026-01-03T03:04:05.000Z",
   });
+});
+
+test("feedbackSinceLatestPlan returns human comments after the latest Symphony plan marker", () => {
+  const comments = [
+    { id: "1", body: `${SYMPHONY_PLAN_MARKER}\nold plan`, created_at: "2026-01-01T00:00:00.000Z", user_name: "Symphony" },
+    { id: "2", body: "old feedback", created_at: "2026-01-01T01:00:00.000Z", user_name: "Lucas" },
+    { id: "3", body: `${SYMPHONY_PLAN_MARKER}\nnew plan`, created_at: "2026-01-01T02:00:00.000Z", user_name: "Symphony" },
+    { id: "4", body: "approve with smaller scope", created_at: "2026-01-01T03:00:00.000Z", user_name: "Lucas" },
+  ];
+
+  assert.deepEqual(feedbackSinceLatestPlan(comments).map((comment) => comment.body), ["approve with smaller scope"]);
 });
 
 test("feedbackSinceLastRun returns only comments after the latest Symphony report marker", () => {

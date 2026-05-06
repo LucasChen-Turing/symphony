@@ -4,7 +4,8 @@ tracker:
   api_key: $LINEAR_API_KEY
   team_key: SYM
   active_states:
-    - Ready for AI
+    - Todo
+    - In Progress
   terminal_states:
     - Done
     - Canceled
@@ -37,7 +38,9 @@ github:
 
 linear:
   writeback: true
-  running_status: AI Running
+  planning_state: Todo
+  plan_review_status: Plan Review
+  implementation_state: In Progress
   review_status: AI Needs Review
   failed_status: AI Failed
 
@@ -70,6 +73,12 @@ Description:
 Recent human feedback since the last Symphony run:
 {{ issue.feedback_since_last_run_summary }}
 
+Latest Symphony plan:
+{{ issue.latest_symphony_plan }}
+
+Human feedback after the latest Symphony plan:
+{{ issue.plan_feedback_since_latest_plan_summary }}
+
 Rules:
 - Work only inside this repository.
 - Keep the change minimal and directly related to the issue.
@@ -77,3 +86,16 @@ Rules:
 - Run the configured validation command indirectly by finishing the task; Symphony will run validation after your turn.
 - Do not push, commit, create pull requests, or update Linear yourself. Symphony performs the handoff after your turn completes.
 - Summarize important implementation notes in your final response.
+
+{% if issue.symphony_planning_mode %}
+Planning phase:
+- Produce only a concise implementation plan.
+- Do not edit files, run validation, commit, push, create pull requests, or update Linear.
+- End with the plan only.
+{% endif %}
+
+{% if issue.symphony_implementation_mode %}
+Implementation phase:
+- Implement the latest Symphony plan, adjusted by human feedback after the plan.
+- If the latest plan is missing, inspect the issue and proceed with the smallest directly related implementation.
+{% endif %}

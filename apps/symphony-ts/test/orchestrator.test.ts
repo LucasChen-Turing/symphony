@@ -96,3 +96,82 @@ Prompt
   await orchestrator.waitForIdle(1000);
   assert.deepEqual(orchestrator.snapshot().completed, []);
 });
+
+test("planning state dispatches in planning mode", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "symphony-ts-plan-run-"));
+  const workflowPath = path.join(dir, "WORKFLOW.md");
+  const workspaceRoot = path.join(dir, "workspaces");
+  await fs.writeFile(workflowPath, `---
+tracker:
+  kind: mock
+  active_states:
+    - Todo
+  issues:
+    - id: issue-1
+      identifier: TST-PLAN
+      title: Plan first
+      state: Todo
+workspace:
+  root: ./workspaces
+linear:
+  planning_state: Todo
+  plan_review_status: Plan Review
+  implementation_state: In Progress
+codex:
+  command: printf '1. Inspect code\\n2. Add tests\\n'
+  stall_timeout_ms: 0
+---
+{% if issue.symphony_planning_mode %}Planning only for {{ issue.identifier }}{% endif %}
+{% if issue.symphony_implementation_mode %}Implementation for {{ issue.identifier }}{% endif %}
+`);
+
+  const orchestrator = new Orchestrator(new WorkflowStore(workflowPath), new ConsoleLogger(), {
+    once: true,
+    enableRetries: false,
+  });
+  await orchestrator.start();
+  await orchestrator.waitForIdle(10000);
+
+  assert.deepEqual(orchestrator.snapshot().completed, ["issue-1"]);
+  const workspace = path.join(workspaceRoot, sanitizeWorkspaceKey("TST-PLAN"));
+  const prompt = await fs.readFile(path.join(workspace, ".symphony", "prompt.md"), "utf8");
+  assert.match(prompt, /Planning only for TST-PLAN/);
+  assert.doesNotMatch(prompt, /Implementation for TST-PLAN/);
+});
+
+test("Plan Review issues are not dispatched", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "symphony-ts-plan-review-"));
+  const workflowPath = path.join(dir, "WORKFLOW.md");
+  await fs.writeFile(workflowPath, `---
+tracker:
+  kind: mock
+  active_states:
+    - Todo
+    - Plan Review
+    - In Progress
+  issues:
+    - id: issue-1
+      identifier: TST-REVIEW
+      title: Awaiting approval
+      state: Plan Review
+workspace:
+  root: ./workspaces
+linear:
+  planning_state: Todo
+  plan_review_status: Plan Review
+  implementation_state: In Progress
+codex:
+  command: node -e "process.exit(0)"
+  stall_timeout_ms: 0
+---
+Prompt
+`);
+
+  const orchestrator = new Orchestrator(new WorkflowStore(workflowPath), new ConsoleLogger(), {
+    once: true,
+    enableRetries: false,
+  });
+  await orchestrator.start();
+  await orchestrator.waitForIdle(1000);
+  assert.deepEqual(orchestrator.snapshot().completed, []);
+});

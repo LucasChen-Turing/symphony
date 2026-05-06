@@ -80,6 +80,9 @@ export function resolveConfig(raw: JsonMap, workflowPath: string, env: NodeJS.Pr
     },
     linear: {
       writeback: booleanAt(linear, "writeback", false),
+      planningState: nullableStringAt(linear, "planning_state"),
+      planReviewStatus: nullableStringAt(linear, "plan_review_status"),
+      implementationState: nullableStringAt(linear, "implementation_state"),
       runningStatus: nullableStringAt(linear, "running_status"),
       reviewStatus: nullableStringAt(linear, "review_status"),
       failedStatus: nullableStringAt(linear, "failed_status"),
@@ -252,6 +255,11 @@ function normalizeIssue(entry: JsonMap, index: number): Issue | null {
     comments_summary: "",
     feedback_since_last_run: [],
     feedback_since_last_run_summary: "",
+    latest_symphony_plan: null,
+    plan_feedback_since_latest_plan: [],
+    plan_feedback_since_latest_plan_summary: "",
+    symphony_planning_mode: false,
+    symphony_implementation_mode: false,
     created_at: parseIsoOrNull(entry.created_at),
     updated_at: parseIsoOrNull(entry.updated_at),
   };

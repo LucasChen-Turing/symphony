@@ -156,6 +156,39 @@ Behavior:
 
 This flow intentionally does not merge PRs, close Linear issues, or push to `main`.
 
+### Linear Plan Review Gate
+
+Dogfood workflows can add a Linear planning gate before implementation:
+
+```yaml
+tracker:
+  active_states:
+    - Todo
+    - In Progress
+
+linear:
+  writeback: true
+  planning_state: Todo
+  plan_review_status: Plan Review
+  implementation_state: In Progress
+  review_status: AI Needs Review
+  failed_status: AI Failed
+```
+
+Behavior:
+
+- Issues in `linear.planning_state` run in planning mode. Symphony prompts Codex to produce a concise plan, skips validation, commit, push, and PR creation, then writes a Linear comment marked with `<!-- symphony:plan -->`.
+- After a successful planning run, Symphony best-effort moves the issue to `linear.plan_review_status` when `linear.writeback` is enabled. The Linear team must already have that workflow state.
+- Issues in `linear.plan_review_status` are never dispatched, even if that state is accidentally listed in `tracker.active_states`.
+- Move the issue to `linear.implementation_state` after human approval. The next implementation prompt can include `{{ issue.latest_symphony_plan }}` and `{{ issue.plan_feedback_since_latest_plan_summary }}`.
+- `running_status` and `review_status` remain supported for existing workflows. When `implementation_state` is configured, it is used as the running status for implementation runs.
+
+Limitations:
+
+- Planning comments are append-only; Symphony reads the latest `<!-- symphony:plan -->` comment as the approved plan context.
+- Human approval is represented by Linear status. Comments provide plan feedback and approval details, but comments alone do not dispatch implementation.
+- Planning mode still creates or reuses a workspace and may clone the configured repo so Codex has context, but Symphony does not hand off git changes from that run.
+
 Review loop:
 
 1. Leave follow-up feedback on the same Linear issue.
