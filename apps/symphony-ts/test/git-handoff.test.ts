@@ -119,7 +119,7 @@ printf 'https://github.com/acme/symphony/pull/1\\n'
     assert.equal(result.prUrl, "https://github.com/acme/symphony/pull/1");
     assert.match(result.commitSha ?? "", /^[0-9a-f]{40}$/);
     const ghCalls = await fs.readFile(ghLog, "utf8");
-    assert.match(ghCalls, /pr view symphony\/SYM-1-test-issue/);
+    assert.match(ghCalls, /pr view symphony\/SYM-1-test-issue --state open/);
     assert.match(ghCalls, /pr create/);
     const remoteBranch = (await runChecked("git", ["--git-dir", remote, "rev-parse", "symphony/SYM-1-test-issue"], { cwd: dir })).stdout.trim();
     assert.equal(remoteBranch, result.commitSha);
@@ -173,8 +173,63 @@ exit 1
 
     assert.equal(result.prUrl, "https://github.com/acme/symphony/pull/1");
     const ghCalls = await fs.readFile(ghLog, "utf8");
-    assert.match(ghCalls, /pr view symphony\/SYM-1-test-issue/);
+    assert.match(ghCalls, /pr view symphony\/SYM-1-test-issue --state open/);
     assert.doesNotMatch(ghCalls, /pr create/);
+  } finally {
+    process.env.PATH = oldPath;
+  }
+});
+
+test("handoff creates a new draft PR when no open PR exists for the branch", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "symphony-ts-handoff-pr-closed-"));
+  const remote = await createRemoteRepo(dir);
+  const binDir = path.join(dir, "bin");
+  const ghLog = path.join(dir, "gh.log");
+  await fs.mkdir(binDir);
+  await fs.writeFile(path.join(binDir, "gh"), `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> ${JSON.stringify(ghLog)}
+if [[ "$1 $2" == "pr view" ]]; then
+  exit 1
+fi
+if [[ "$1 $2" == "pr create" ]]; then
+  printf 'https://github.com/acme/symphony/pull/2\\n'
+  exit 0
+fi
+printf 'unexpected gh call\\n' >&2
+exit 1
+`, { mode: 0o755 });
+
+  const oldPath = process.env.PATH;
+  process.env.PATH = `${binDir}:${oldPath ?? ""}`;
+  try {
+    const config = resolveConfig({
+      tracker: { kind: "mock" },
+      workspace: { root: path.join(dir, "workspaces") },
+      git: {
+        enabled: true,
+        repo: remote,
+        allowed_repos: [remote],
+        base_branch: "main",
+        branch_prefix: "symphony",
+        commit_author_name: "Symphony",
+        commit_author_email: "symphony@example.test",
+      },
+      github: {
+        create_pr: true,
+        draft: true,
+      },
+    }, path.join(dir, "WORKFLOW.md"));
+
+    const workspace = await new WorkspaceManager(config, new ConsoleLogger()).ensureWorkspace("SYM-1");
+    const gitWorkspace = await new GitWorkspaceManager(config, new ConsoleLogger()).prepare(workspace.path, issue());
+    await fs.writeFile(path.join(gitWorkspace.runPath, "new-pr.txt"), "done\n", "utf8");
+
+    const result = await new HandoffManager(config, new ConsoleLogger()).complete(issue(), gitWorkspace);
+
+    assert.equal(result.prUrl, "https://github.com/acme/symphony/pull/2");
+    const ghCalls = await fs.readFile(ghLog, "utf8");
+    assert.match(ghCalls, /pr view symphony\/SYM-1-test-issue --state open/);
+    assert.match(ghCalls, /pr create/);
   } finally {
     process.env.PATH = oldPath;
   }

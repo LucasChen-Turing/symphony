@@ -132,6 +132,8 @@ export class HandoffManager {
       "pr",
       "view",
       workspace.branchName,
+      "--state",
+      "open",
       "--json",
       "url",
       "--jq",
