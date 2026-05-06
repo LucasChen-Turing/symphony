@@ -11,6 +11,8 @@ This is a minimal Symphony-compatible orchestration app implemented with TypeScr
 
 ## Setup
 
+This app can be dogfooded from Linear through Symphony.
+
 ```sh
 cd apps/symphony-ts
 npm test
