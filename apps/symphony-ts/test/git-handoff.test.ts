@@ -109,6 +109,78 @@ test("existing issue branch syncs with origin base before validation and handoff
   assert.match(result.commitSha ?? "", /^[0-9a-f]{40}$/);
 });
 
+test("handoff pushes a clean issue branch that is ahead of its remote", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "symphony-ts-handoff-ahead-"));
+  const remote = await createRemoteRepo(dir);
+  const validationLog = path.join(dir, "validation.log");
+  const binDir = path.join(dir, "bin");
+  const ghLog = path.join(dir, "gh.log");
+  await fs.mkdir(binDir);
+  await fs.writeFile(path.join(binDir, "gh"), `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> ${JSON.stringify(ghLog)}
+if [[ "$1 $2" == "pr view" ]]; then
+  exit 1
+fi
+if [[ "$1 $2" == "pr create" ]]; then
+  printf 'https://github.com/acme/symphony/pull/3\\n'
+  exit 0
+fi
+printf 'unexpected gh call\\n' >&2
+exit 1
+`, { mode: 0o755 });
+
+  const oldPath = process.env.PATH;
+  process.env.PATH = `${binDir}:${oldPath ?? ""}`;
+  try {
+    const config = resolveConfig({
+      tracker: { kind: "mock" },
+      workspace: { root: path.join(dir, "workspaces") },
+      git: {
+        enabled: true,
+        repo: remote,
+        allowed_repos: [remote],
+        base_branch: "main",
+        branch_prefix: "symphony",
+        validation_command: `test -f base.txt && printf validated > ${JSON.stringify(validationLog)}`,
+        commit_author_name: "Symphony",
+        commit_author_email: "symphony@example.test",
+      },
+      github: {
+        create_pr: true,
+        draft: true,
+      },
+    }, path.join(dir, "WORKFLOW.md"));
+
+    const workspace = await new WorkspaceManager(config, new ConsoleLogger()).ensureWorkspace("SYM-1");
+    const first = await new GitWorkspaceManager(config, new ConsoleLogger()).prepare(workspace.path, issue());
+    await fs.writeFile(path.join(first.runPath, "issue.txt"), "issue\n", "utf8");
+    await runChecked("git", ["add", "issue.txt"], { cwd: first.runPath });
+    await runChecked("git", ["commit", "-m", "issue branch change"], { cwd: first.runPath });
+    await runChecked("git", ["push", "-u", "origin", first.branchName!], { cwd: first.runPath });
+    await runChecked("git", ["checkout", "main"], { cwd: first.runPath });
+    await commitFileToRemote(dir, remote, "main", "base.txt", "base\n", "base branch change");
+
+    const reused = await new GitWorkspaceManager(config, new ConsoleLogger()).prepare(workspace.path, issue());
+    const statusBefore = (await runChecked("git", ["status", "--porcelain"], { cwd: reused.runPath })).stdout.trim();
+    const headBefore = (await runChecked("git", ["rev-parse", "HEAD"], { cwd: reused.runPath })).stdout.trim();
+
+    const result = await new HandoffManager(config, new ConsoleLogger()).complete(issue(), reused);
+
+    assert.equal(statusBefore, "");
+    assert.equal(result.changed, true);
+    assert.equal(result.commitSha, headBefore);
+    assert.equal(result.prUrl, "https://github.com/acme/symphony/pull/3");
+    assert.equal(await fs.readFile(validationLog, "utf8"), "validated");
+    const ghCalls = await fs.readFile(ghLog, "utf8");
+    assert.match(ghCalls, /pr view symphony\/SYM-1-test-issue --state open/);
+    assert.match(ghCalls, /pr create/);
+    const remoteBranch = (await runChecked("git", ["--git-dir", remote, "rev-parse", "symphony/SYM-1-test-issue"], { cwd: dir })).stdout.trim();
+    assert.equal(remoteBranch, headBefore);
+  } finally {
+    process.env.PATH = oldPath;
+  }
+});
+
 test("existing issue branch base sync failure is surfaced clearly", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "symphony-ts-git-sync-conflict-"));
   const remote = await createRemoteRepo(dir);
