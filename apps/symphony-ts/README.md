@@ -164,6 +164,7 @@ Dogfood workflows can add a Linear planning gate before implementation:
 tracker:
   active_states:
     - Todo
+    - Plan Review
     - In Progress
 
 linear:
@@ -179,21 +180,25 @@ Behavior:
 
 - Issues in `linear.planning_state` run in planning mode. Symphony prompts Codex to produce a concise plan, skips validation, commit, push, and PR creation, then writes a Linear comment marked with `<!-- symphony:plan -->`.
 - After a successful planning run, Symphony best-effort moves the issue to `linear.plan_review_status` when `linear.writeback` is enabled. The Linear team must already have that workflow state.
-- Issues in `linear.plan_review_status` are never dispatched, even if that state is accidentally listed in `tracker.active_states`.
-- Move the issue to `linear.implementation_state` after human approval. The next implementation prompt can include `{{ issue.latest_symphony_plan }}` and `{{ issue.plan_feedback_since_latest_plan_summary }}`.
+- Issues in `linear.plan_review_status` are inspected for human comments after the latest `<!-- symphony:plan -->` comment.
+- Clear change feedback regenerates the plan in planning mode and keeps the issue in `linear.plan_review_status`.
+- Clear approval feedback best-effort moves the issue to `linear.implementation_state` and writes a short Linear comment. Symphony does not implement in the same Plan Review tick; the next poll/run performs implementation.
+- The next implementation prompt can include `{{ issue.latest_symphony_plan }}` and `{{ issue.plan_feedback_since_latest_plan_summary }}`.
 - `running_status` and `review_status` remain supported for existing workflows. When `implementation_state` is configured, it is used as the running status for implementation runs.
 
 Limitations:
 
 - Planning comments are append-only; Symphony reads the latest `<!-- symphony:plan -->` comment as the approved plan context.
-- Human approval is represented by Linear status. Comments provide plan feedback and approval details, but comments alone do not dispatch implementation.
+- Plan Review intent detection is deterministic and conservative. Approval currently recognizes explicit phrases such as `LGTM`, `Approved`, `Approve`, `Proceed`, and `Implement this plan`.
+- Blocking phrases such as `not approved`, `do not implement`, `hold`, and `blocked` prevent approval promotion.
+- Unclear Plan Review feedback stays idle until a clearer approval or change request is added.
 - Planning mode still creates or reuses a workspace and may clone the configured repo so Codex has context, but Symphony does not hand off git changes from that run.
 
 Review loop:
 
 1. Leave follow-up feedback on the same Linear issue.
-2. Move the issue back to an active state configured in `tracker.active_states`.
-3. Run Symphony again.
+2. Leave explicit approval feedback such as `LGTM` when the plan is ready, or ask for concrete plan changes.
+3. Run Symphony again. Approval only promotes the issue; implementation happens on the following poll/run after the issue is in `linear.implementation_state`.
 
 The next run will reuse the existing `symphony/<issue>...` branch and update the same draft PR. Symphony write-back comments include an internal `<!-- symphony:run-report -->` marker; the next run includes only human comments after the latest marker as `issue.feedback_since_last_run_summary`.
 

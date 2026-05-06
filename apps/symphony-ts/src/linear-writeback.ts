@@ -26,6 +26,12 @@ export class LinearWriteback {
     await this.updateStatusIfConfigured(issue, this.config.linear.planReviewStatus);
   }
 
+  async markPlanApproved(issue: Issue): Promise<void> {
+    if (!this.enabled()) return;
+    await this.addComment(issue, withRunReportMarker("Plan approved. Moving to implementation."));
+    await this.updateStatusIfConfigured(issue, this.config.linear.implementationState);
+  }
+
   async markReview(issue: Issue, body: string): Promise<void> {
     if (!this.enabled()) return;
     await this.addComment(issue, withRunReportMarker(body));
