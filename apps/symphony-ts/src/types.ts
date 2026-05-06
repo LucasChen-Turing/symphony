@@ -28,6 +28,11 @@ export interface Issue {
   comments_summary: string;
   feedback_since_last_run: IssueComment[];
   feedback_since_last_run_summary: string;
+  latest_symphony_plan: string | null;
+  plan_feedback_since_latest_plan: IssueComment[];
+  plan_feedback_since_latest_plan_summary: string;
+  symphony_planning_mode: boolean;
+  symphony_implementation_mode: boolean;
   created_at: string | null;
   updated_at: string | null;
 }
@@ -85,6 +90,9 @@ export interface EffectiveConfig {
   };
   linear: {
     writeback: boolean;
+    planningState: string | null;
+    planReviewStatus: string | null;
+    implementationState: string | null;
     runningStatus: string | null;
     reviewStatus: string | null;
     failedStatus: string | null;

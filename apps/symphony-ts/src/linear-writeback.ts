@@ -1,5 +1,5 @@
 import { LinearClient, type LinearGraphqlClient } from "./linear-client.ts";
-import { SYMPHONY_RUN_REPORT_MARKER } from "./linear-tracker.ts";
+import { SYMPHONY_PLAN_MARKER, SYMPHONY_RUN_REPORT_MARKER } from "./linear-tracker.ts";
 import type { EffectiveConfig, Issue, JsonMap, Logger } from "./types.ts";
 
 export class LinearWriteback {
@@ -17,7 +17,13 @@ export class LinearWriteback {
 
   async markRunning(issue: Issue): Promise<void> {
     if (!this.enabled()) return;
-    await this.updateStatusIfConfigured(issue, this.config.linear.runningStatus);
+    await this.updateStatusIfConfigured(issue, this.config.linear.implementationState ?? this.config.linear.runningStatus);
+  }
+
+  async markPlan(issue: Issue, body: string): Promise<void> {
+    if (!this.enabled()) return;
+    await this.addComment(issue, withPlanMarker(body));
+    await this.updateStatusIfConfigured(issue, this.config.linear.planReviewStatus);
   }
 
   async markReview(issue: Issue, body: string): Promise<void> {
@@ -131,4 +137,8 @@ function isObject(value: unknown): value is JsonMap {
 
 function withRunReportMarker(body: string): string {
   return body.includes(SYMPHONY_RUN_REPORT_MARKER) ? body : `${SYMPHONY_RUN_REPORT_MARKER}\n${body}`;
+}
+
+function withPlanMarker(body: string): string {
+  return body.includes(SYMPHONY_PLAN_MARKER) ? body : `${SYMPHONY_PLAN_MARKER}\n${body}`;
 }

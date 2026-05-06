@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
 import { resolveConfig } from "../src/config.ts";
-import { SYMPHONY_RUN_REPORT_MARKER } from "../src/linear-tracker.ts";
+import { SYMPHONY_PLAN_MARKER, SYMPHONY_RUN_REPORT_MARKER } from "../src/linear-tracker.ts";
 import { LinearWriteback } from "../src/linear-writeback.ts";
 import { ConsoleLogger } from "../src/logger.ts";
 import type { Issue, JsonMap } from "../src/types.ts";
@@ -48,6 +48,30 @@ test("LinearWriteback comments and moves the issue to review status", async () =
   assert.deepEqual(client.calls[2]!.variables, { issueId: "issue-1", stateId: "state-review" });
 });
 
+test("LinearWriteback comments with a plan marker and moves the issue to plan review", async () => {
+  const config = resolveConfig({
+    tracker: {
+      kind: "linear",
+      team_key: "SYM",
+      api_key: "$LINEAR_API_KEY",
+    },
+    linear: {
+      writeback: true,
+      plan_review_status: "Plan Review",
+    },
+  }, path.join(process.cwd(), "WORKFLOW.md"), { LINEAR_API_KEY: "secret" });
+  const client = new MockLinearClient();
+  client.responses[1] = { data: { workflowStates: { nodes: [{ id: "state-plan-review", name: "Plan Review" }] } } };
+
+  await new LinearWriteback(config, new ConsoleLogger(), client).markPlan(issue(), "1. Inspect\n2. Implement");
+
+  assert.equal(client.calls.length, 3);
+  assert.match(client.calls[0]!.query, /commentCreate/);
+  assert.deepEqual(client.calls[0]!.variables, { issueId: "issue-1", body: `${SYMPHONY_PLAN_MARKER}\n1. Inspect\n2. Implement` });
+  assert.deepEqual(client.calls[1]!.variables, { teamKey: "SYM", statusName: "Plan Review" });
+  assert.deepEqual(client.calls[2]!.variables, { issueId: "issue-1", stateId: "state-plan-review" });
+});
+
 function issue(): Issue {
   return {
     id: "issue-1",
@@ -64,6 +88,11 @@ function issue(): Issue {
     comments_summary: "",
     feedback_since_last_run: [],
     feedback_since_last_run_summary: "",
+    latest_symphony_plan: null,
+    plan_feedback_since_latest_plan: [],
+    plan_feedback_since_latest_plan_summary: "",
+    symphony_planning_mode: false,
+    symphony_implementation_mode: false,
     created_at: null,
     updated_at: null,
   };

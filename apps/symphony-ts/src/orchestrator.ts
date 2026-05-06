@@ -469,6 +469,9 @@ export class Orchestrator {
       return false;
     }
     const state = normalizeState(issue.state);
+    if (this.config.linear.planReviewStatus && state === normalizeState(this.config.linear.planReviewStatus)) {
+      return false;
+    }
     if (!stateSet(this.config.tracker.activeStates).has(state) || stateSet(this.config.tracker.terminalStates).has(state)) {
       return false;
     }
@@ -582,6 +585,11 @@ function retryToIssue(retry: RetryEntry): Issue {
     comments_summary: "",
     feedback_since_last_run: [],
     feedback_since_last_run_summary: "",
+    latest_symphony_plan: null,
+    plan_feedback_since_latest_plan: [],
+    plan_feedback_since_latest_plan_summary: "",
+    symphony_planning_mode: false,
+    symphony_implementation_mode: false,
     created_at: null,
     updated_at: null,
   };
