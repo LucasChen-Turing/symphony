@@ -72,6 +72,80 @@ test("git workspace reuses an existing remote issue branch", async () => {
   assert.equal(await fs.readFile(path.join(reused.runPath, "remote-branch.txt"), "utf8"), "remote\n");
 });
 
+test("existing issue branch syncs with origin base before validation and handoff", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "symphony-ts-git-sync-"));
+  const remote = await createRemoteRepo(dir);
+  const config = resolveConfig({
+    tracker: { kind: "mock" },
+    workspace: { root: path.join(dir, "workspaces") },
+    git: {
+      enabled: true,
+      repo: remote,
+      allowed_repos: [remote],
+      base_branch: "main",
+      branch_prefix: "symphony",
+      validation_command: "test -f base.txt",
+      commit_author_name: "Symphony",
+      commit_author_email: "symphony@example.test",
+    },
+  }, path.join(dir, "WORKFLOW.md"));
+
+  const workspace = await new WorkspaceManager(config, new ConsoleLogger()).ensureWorkspace("SYM-1");
+  const first = await new GitWorkspaceManager(config, new ConsoleLogger()).prepare(workspace.path, issue());
+  await fs.writeFile(path.join(first.runPath, "issue.txt"), "issue\n", "utf8");
+  await runChecked("git", ["add", "issue.txt"], { cwd: first.runPath });
+  await runChecked("git", ["commit", "-m", "issue branch change"], { cwd: first.runPath });
+  await runChecked("git", ["push", "-u", "origin", first.branchName!], { cwd: first.runPath });
+  await runChecked("git", ["checkout", "main"], { cwd: first.runPath });
+  await commitFileToRemote(dir, remote, "main", "base.txt", "base\n", "base branch change");
+
+  const reused = await new GitWorkspaceManager(config, new ConsoleLogger()).prepare(workspace.path, issue());
+  await fs.writeFile(path.join(reused.runPath, "feature.txt"), "done\n", "utf8");
+  const result = await new HandoffManager(config, new ConsoleLogger()).complete(issue(), reused);
+
+  assert.equal(await fs.readFile(path.join(reused.runPath, "base.txt"), "utf8"), "base\n");
+  assert.equal(await fs.readFile(path.join(reused.runPath, "issue.txt"), "utf8"), "issue\n");
+  assert.equal(result.changed, true);
+  assert.match(result.commitSha ?? "", /^[0-9a-f]{40}$/);
+});
+
+test("existing issue branch base sync failure is surfaced clearly", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "symphony-ts-git-sync-conflict-"));
+  const remote = await createRemoteRepo(dir);
+  const config = resolveConfig({
+    tracker: { kind: "mock" },
+    workspace: { root: path.join(dir, "workspaces") },
+    git: {
+      enabled: true,
+      repo: remote,
+      allowed_repos: [remote],
+      base_branch: "main",
+      branch_prefix: "symphony",
+      commit_author_name: "Symphony",
+      commit_author_email: "symphony@example.test",
+    },
+  }, path.join(dir, "WORKFLOW.md"));
+
+  const workspace = await new WorkspaceManager(config, new ConsoleLogger()).ensureWorkspace("SYM-1");
+  const first = await new GitWorkspaceManager(config, new ConsoleLogger()).prepare(workspace.path, issue());
+  await fs.writeFile(path.join(first.runPath, "README.md"), "issue\n", "utf8");
+  await runChecked("git", ["add", "README.md"], { cwd: first.runPath });
+  await runChecked("git", ["commit", "-m", "issue readme change"], { cwd: first.runPath });
+  const issueHead = (await runChecked("git", ["rev-parse", "HEAD"], { cwd: first.runPath })).stdout.trim();
+  await runChecked("git", ["push", "-u", "origin", first.branchName!], { cwd: first.runPath });
+  await runChecked("git", ["checkout", "main"], { cwd: first.runPath });
+  await commitFileToRemote(dir, remote, "main", "README.md", "base\n", "conflicting base change");
+
+  await assert.rejects(
+    () => new GitWorkspaceManager(config, new ConsoleLogger()).prepare(workspace.path, issue()),
+    /git base branch sync failed: merge origin\/main into symphony\/SYM-1-test-issue failed code=1/,
+  );
+  const status = (await runChecked("git", ["status", "--porcelain"], { cwd: first.runPath })).stdout.trim();
+  const head = (await runChecked("git", ["rev-parse", "HEAD"], { cwd: first.runPath })).stdout.trim();
+  assert.equal(status, "");
+  assert.equal(head, issueHead);
+});
+
 test("handoff validates, commits, pushes, and creates a draft PR", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "symphony-ts-handoff-"));
   const remote = await createRemoteRepo(dir);
@@ -248,6 +322,25 @@ async function createRemoteRepo(dir: string): Promise<string> {
   await runChecked("git", ["commit", "-m", "seed"], { cwd: seed });
   await runChecked("git", ["clone", "--bare", seed, remote], { cwd: dir });
   return remote;
+}
+
+async function commitFileToRemote(
+  dir: string,
+  remote: string,
+  branch: string,
+  file: string,
+  contents: string,
+  message: string,
+): Promise<void> {
+  const checkout = await fs.mkdtemp(path.join(dir, "remote-work-"));
+  await runChecked("git", ["clone", remote, checkout], { cwd: dir });
+  await runChecked("git", ["checkout", branch], { cwd: checkout });
+  await runChecked("git", ["config", "user.name", "Test User"], { cwd: checkout });
+  await runChecked("git", ["config", "user.email", "test@example.test"], { cwd: checkout });
+  await fs.writeFile(path.join(checkout, file), contents, "utf8");
+  await runChecked("git", ["add", file], { cwd: checkout });
+  await runChecked("git", ["commit", "-m", message], { cwd: checkout });
+  await runChecked("git", ["push", "origin", branch], { cwd: checkout });
 }
 
 function issue(overrides: Partial<Issue> = {}): Issue {
