@@ -106,6 +106,8 @@ Linear fields:
 - `terminal_states`: Linear state names used for startup cleanup and reconciliation.
 - `labels`: optional label-name filter.
 - `limit`: maximum issues fetched per poll, default `50`.
+- `comments_limit`: recent issue comments fetched per issue, default `50`.
+- `feedback_max_chars`: maximum prompt characters used for comment feedback, default `4000`.
 
 Read-only Linear mode is meant for one local Symphony process. If `linear.writeback` is disabled, two processes can still dispatch the same issue.
 
@@ -147,9 +149,20 @@ Behavior:
 - `git.validation_command` runs after the agent turn and before commit.
 - If changes exist and validation passes, Symphony commits them.
 - If `github.create_pr` is true, Symphony pushes the branch and runs `gh pr create`. PRs default to draft.
+- If the issue branch already exists on the remote, Symphony checks out that branch and continues from it instead of recreating the branch from `base_branch`.
+- If an open PR already exists for the issue branch, Symphony reuses it instead of creating a duplicate PR.
+- If no files changed, Symphony skips commit, push, and PR creation even when the issue has follow-up comments.
 - If `linear.writeback` is true, Symphony comments on the Linear issue and best-effort moves it to `AI Running`, `AI Needs Review`, or `AI Failed`.
 
 This flow intentionally does not merge PRs, close Linear issues, or push to `main`.
+
+Review loop:
+
+1. Leave follow-up feedback on the same Linear issue.
+2. Move the issue back to an active state configured in `tracker.active_states`.
+3. Run Symphony again.
+
+The next run will reuse the existing `symphony/<issue>...` branch and update the same draft PR. Symphony write-back comments include an internal `<!-- symphony:run-report -->` marker; the next run includes only human comments after the latest marker as `issue.feedback_since_last_run_summary`.
 
 Use `WORKFLOW.dogfood.example.md` as the starting point for this repository:
 

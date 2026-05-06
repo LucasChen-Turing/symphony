@@ -45,6 +45,8 @@ export function resolveConfig(raw: JsonMap, workflowPath: string, env: NodeJS.Pr
       terminalStates,
       labels: stringListAt(tracker, "labels", []),
       limit: asPositiveInteger(tracker.limit, 50),
+      commentsLimit: asPositiveInteger(tracker.comments_limit, 50),
+      feedbackMaxChars: asPositiveInteger(tracker.feedback_max_chars, 4000),
       mockIssues: normalizeIssues(arrayAt(tracker, "issues")),
     },
     polling: {
@@ -246,6 +248,10 @@ function normalizeIssue(entry: JsonMap, index: number): Issue | null {
             state: stringValue(blocker.state),
           }))
       : [],
+    comments: [],
+    comments_summary: "",
+    feedback_since_last_run: [],
+    feedback_since_last_run_summary: "",
     created_at: parseIsoOrNull(entry.created_at),
     updated_at: parseIsoOrNull(entry.updated_at),
   };

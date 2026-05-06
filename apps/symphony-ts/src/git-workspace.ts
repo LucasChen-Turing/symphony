@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { EffectiveConfig, GitWorkspace, Issue, Logger } from "./types.ts";
 import { isPathInside, sanitizeWorkspaceKey } from "./util.ts";
-import { runChecked } from "./process-runner.ts";
+import { runChecked, runProcess } from "./process-runner.ts";
 
 export class GitWorkspaceManager {
   private readonly config: EffectiveConfig;
@@ -88,8 +88,24 @@ export class GitWorkspaceManager {
   private async checkoutBranch(repoPath: string, branchName: string): Promise<void> {
     const base = this.config.git.baseBranch;
     const remote = this.config.github.remote;
-    let baseRef = `${remote}/${base}`;
 
+    if (branchName === base || branchName === "main" || branchName === "master") {
+      throw new Error(`refusing to use protected branch name: ${branchName}`);
+    }
+
+    const remoteBranchRef = `${remote}/${branchName}`;
+    if (await this.fetchRemoteBranch(repoPath, remote, branchName)) {
+      await runChecked("git", ["checkout", "-B", branchName, remoteBranchRef], { cwd: repoPath, timeoutMs: 120000 });
+      this.logger.info("git branch prepared from existing remote branch", {
+        cwd: repoPath,
+        branch: branchName,
+        remote_branch: remoteBranchRef,
+      });
+      await this.syncWithRemoteBase(repoPath, remote, branchName, base);
+      return;
+    }
+
+    let baseRef = `${remote}/${base}`;
     try {
       await runChecked("git", ["fetch", remote, base], { cwd: repoPath, timeoutMs: 300000 });
     } catch (error) {
@@ -101,11 +117,64 @@ export class GitWorkspaceManager {
       baseRef = base;
     }
 
-    if (branchName === base || branchName === "main" || branchName === "master") {
-      throw new Error(`refusing to use protected branch name: ${branchName}`);
-    }
     await runChecked("git", ["checkout", "-B", branchName, baseRef], { cwd: repoPath, timeoutMs: 120000 });
-    this.logger.info("git branch prepared", { cwd: repoPath, branch: branchName, base: baseRef });
+    this.logger.info("git branch prepared from base branch", { cwd: repoPath, branch: branchName, base: baseRef });
+  }
+
+  private async fetchRemoteBranch(repoPath: string, remote: string, branchName: string): Promise<boolean> {
+    const result = await runProcess("git", [
+      "fetch",
+      remote,
+      `refs/heads/${branchName}:refs/remotes/${remote}/${branchName}`,
+    ], { cwd: repoPath, timeoutMs: 300000 });
+    return result.code === 0;
+  }
+
+  private async syncWithRemoteBase(repoPath: string, remote: string, branchName: string, base: string): Promise<void> {
+    const baseRef = `${remote}/${base}`;
+    this.logger.info("git base branch sync started", {
+      cwd: repoPath,
+      branch: branchName,
+      base: baseRef,
+    });
+    try {
+      await runChecked("git", ["fetch", remote, `refs/heads/${base}:refs/remotes/${remote}/${base}`], {
+        cwd: repoPath,
+        timeoutMs: 300000,
+      });
+    } catch (error) {
+      throw new Error(`git base branch sync failed: fetch ${remote} ${base} failed: ${errorMessage(error)}`);
+    }
+
+    const merge = await runProcess("git", ["merge", "--no-edit", baseRef], {
+      cwd: repoPath,
+      env: this.gitAuthorEnv(),
+      timeoutMs: 300000,
+    });
+    if (merge.code !== 0) {
+      await runProcess("git", ["merge", "--abort"], { cwd: repoPath, timeoutMs: 120000 });
+      throw new Error(
+        `git base branch sync failed: merge ${baseRef} into ${branchName} failed code=${merge.code}: ${trimOutput(merge.stderr || merge.stdout)}`,
+      );
+    }
+    this.logger.info("git base branch sync completed", {
+      cwd: repoPath,
+      branch: branchName,
+      base: baseRef,
+    });
+  }
+
+  private gitAuthorEnv(): NodeJS.ProcessEnv {
+    const env = { ...process.env };
+    if (this.config.git.commitAuthorName) {
+      env.GIT_AUTHOR_NAME = this.config.git.commitAuthorName;
+      env.GIT_COMMITTER_NAME = this.config.git.commitAuthorName;
+    }
+    if (this.config.git.commitAuthorEmail) {
+      env.GIT_AUTHOR_EMAIL = this.config.git.commitAuthorEmail;
+      env.GIT_COMMITTER_EMAIL = this.config.git.commitAuthorEmail;
+    }
+    return env;
   }
 }
 
@@ -128,4 +197,12 @@ function sanitizeBranchPart(value: string): string {
     .replace(/\/+/g, "/")
     .replace(/\.\./g, ".")
     .replace(/-+/g, "-");
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function trimOutput(output: string): string {
+  return output.trim().slice(0, 1000);
 }

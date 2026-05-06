@@ -578,6 +578,10 @@ function retryToIssue(retry: RetryEntry): Issue {
     url: null,
     labels: [],
     blocked_by: [],
+    comments: [],
+    comments_summary: "",
+    feedback_since_last_run: [],
+    feedback_since_last_run_summary: "",
     created_at: null,
     updated_at: null,
   };

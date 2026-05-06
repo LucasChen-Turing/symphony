@@ -16,7 +16,8 @@ export class HandoffManager {
     }
 
     const changedBeforeValidation = await hasWorkingTreeChanges(workspace.runPath);
-    if (!changedBeforeValidation) {
+    const hadUnpushedCommits = await hasUnpushedCommits(workspace.runPath, this.config.github.remote, workspace.branchName);
+    if (!changedBeforeValidation && !hadUnpushedCommits) {
       this.logger.info("handoff skipped; no git changes", {
         issue_id: issue.id,
         issue_identifier: issue.identifier,
@@ -42,7 +43,8 @@ export class HandoffManager {
     }
 
     const changed = await hasWorkingTreeChanges(workspace.runPath);
-    if (!changed) {
+    const hasHandoffCommits = changed || hadUnpushedCommits;
+    if (!hasHandoffCommits) {
       this.logger.info("handoff skipped; no git changes", {
         issue_id: issue.id,
         issue_identifier: issue.identifier,
@@ -50,13 +52,17 @@ export class HandoffManager {
       return { changed: false, branchName: workspace.branchName, commitSha: null, prUrl: null, validationOutput };
     }
 
-    await runChecked("git", ["add", "-A"], { cwd: workspace.runPath, timeoutMs: 120000 });
-    const stagedDiff = await runProcess("git", ["diff", "--cached", "--quiet"], { cwd: workspace.runPath, timeoutMs: 120000 });
-    if (stagedDiff.code === 0) {
-      return { changed: false, branchName: workspace.branchName, commitSha: null, prUrl: null, validationOutput };
+    if (changed) {
+      await runChecked("git", ["add", "-A"], { cwd: workspace.runPath, timeoutMs: 120000 });
+      const stagedDiff = await runProcess("git", ["diff", "--cached", "--quiet"], { cwd: workspace.runPath, timeoutMs: 120000 });
+      if (stagedDiff.code === 0 && !hadUnpushedCommits) {
+        return { changed: false, branchName: workspace.branchName, commitSha: null, prUrl: null, validationOutput };
+      }
+      if (stagedDiff.code !== 0) {
+        await this.commit(issue, workspace.runPath);
+      }
     }
 
-    await this.commit(issue, workspace.runPath);
     const commitSha = (await runChecked("git", ["rev-parse", "HEAD"], { cwd: workspace.runPath, timeoutMs: 30000 })).stdout.trim();
     let prUrl: string | null = null;
 
@@ -68,7 +74,7 @@ export class HandoffManager {
         cwd: workspace.runPath,
         timeoutMs: 300000,
       });
-      prUrl = await this.createDraftPr(issue, workspace);
+      prUrl = await this.findExistingPrUrl(workspace) ?? await this.createDraftPr(issue, workspace);
     }
 
     return { changed: true, branchName: workspace.branchName, commitSha, prUrl, validationOutput };
@@ -123,6 +129,32 @@ export class HandoffManager {
     });
     return url;
   }
+
+  private async findExistingPrUrl(workspace: GitWorkspace): Promise<string | null> {
+    if (!workspace.branchName) {
+      return null;
+    }
+    const result = await runProcess("gh", [
+      "pr",
+      "view",
+      workspace.branchName,
+      "--state",
+      "open",
+      "--json",
+      "url",
+      "--jq",
+      ".url",
+    ], { cwd: workspace.runPath, timeoutMs: 120000 });
+    if (result.code !== 0) {
+      return null;
+    }
+    const url = result.stdout.trim();
+    if (!/^https?:\/\//.test(url)) {
+      return null;
+    }
+    this.logger.info("github pr reused", { pr_url: url });
+    return url;
+  }
 }
 
 export function successComment(issue: Issue, result: HandoffResult): string {
@@ -150,6 +182,19 @@ export function failureComment(issue: Issue, error: string): string {
 async function hasWorkingTreeChanges(cwd: string): Promise<boolean> {
   const status = await runChecked("git", ["status", "--porcelain"], { cwd, timeoutMs: 30000 });
   return status.stdout.trim().length > 0;
+}
+
+async function hasUnpushedCommits(cwd: string, remote: string, branchName: string | null): Promise<boolean> {
+  if (!branchName) {
+    return false;
+  }
+  const remoteRef = `refs/remotes/${remote}/${branchName}`;
+  const remoteExists = await runProcess("git", ["rev-parse", "--verify", "--quiet", remoteRef], { cwd, timeoutMs: 30000 });
+  if (remoteExists.code !== 0) {
+    return false;
+  }
+  const count = await runChecked("git", ["rev-list", "--count", `${remoteRef}..HEAD`], { cwd, timeoutMs: 30000 });
+  return Number.parseInt(count.stdout.trim(), 10) > 0;
 }
 
 function prBody(issue: Issue): string {
