@@ -34,9 +34,101 @@ test("git workspace clones an allowed repo and checks out an issue branch", asyn
   const gitWorkspace = await new GitWorkspaceManager(config, new ConsoleLogger()).prepare(workspace.path, issue());
 
   assert.equal(gitWorkspace.branchName, "symphony/SYM-1-test-issue");
+  assert.equal(gitWorkspace.prBaseBranch, "main");
   assert.equal(gitWorkspace.runPath, path.join(workspace.path, "repo"));
   const branch = (await runChecked("git", ["branch", "--show-current"], { cwd: gitWorkspace.runPath })).stdout.trim();
   assert.equal(branch, "symphony/SYM-1-test-issue");
+});
+
+test("normal issue still uses git base branch when sub-issue base is enabled", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "symphony-ts-git-normal-base-"));
+  const remote = await createRemoteRepo(dir);
+  const config = resolveConfig({
+    tracker: { kind: "mock" },
+    workspace: { root: path.join(dir, "workspaces") },
+    git: {
+      enabled: true,
+      repo: remote,
+      allowed_repos: [remote],
+      base_branch: "main",
+      branch_prefix: "symphony",
+      subissue_base: "parent_issue_branch",
+    },
+  }, path.join(dir, "WORKFLOW.md"));
+
+  await commitFileToRemote(dir, remote, "main", "base.txt", "main\n", "main branch change");
+  const workspace = await new WorkspaceManager(config, new ConsoleLogger()).ensureWorkspace("SYM-2");
+  const gitWorkspace = await new GitWorkspaceManager(config, new ConsoleLogger()).prepare(workspace.path, issue({ identifier: "SYM-2" }));
+
+  assert.equal(gitWorkspace.prBaseBranch, "main");
+  assert.equal(await fs.readFile(path.join(gitWorkspace.runPath, "base.txt"), "utf8"), "main\n");
+});
+
+test("sub-issue uses parent issue branch when found", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "symphony-ts-git-parent-base-"));
+  const remote = await createRemoteRepo(dir);
+  const config = resolveConfig({
+    tracker: { kind: "mock" },
+    workspace: { root: path.join(dir, "workspaces") },
+    git: {
+      enabled: true,
+      repo: remote,
+      allowed_repos: [remote],
+      base_branch: "main",
+      branch_prefix: "symphony",
+      subissue_base: "parent_issue_branch",
+    },
+  }, path.join(dir, "WORKFLOW.md"));
+
+  const workspace = await new WorkspaceManager(config, new ConsoleLogger()).ensureWorkspace("SYM-13");
+  const manager = new GitWorkspaceManager(config, new ConsoleLogger());
+  const parent = await manager.prepare(workspace.path, issue({ identifier: "SYM-12", title: "Parent issue" }));
+  await runChecked("git", ["config", "user.name", "Test User"], { cwd: parent.runPath });
+  await runChecked("git", ["config", "user.email", "test@example.test"], { cwd: parent.runPath });
+  await fs.writeFile(path.join(parent.runPath, "parent.txt"), "parent\n", "utf8");
+  await runChecked("git", ["add", "parent.txt"], { cwd: parent.runPath });
+  await runChecked("git", ["commit", "-m", "parent branch change"], { cwd: parent.runPath });
+  const parentHead = (await runChecked("git", ["rev-parse", "HEAD"], { cwd: parent.runPath })).stdout.trim();
+  await runChecked("git", ["push", "-u", "origin", parent.branchName!], { cwd: parent.runPath });
+
+  const child = await manager.prepare(workspace.path, issue({
+    identifier: "SYM-13",
+    title: "Child issue",
+    parent: { id: "issue-12", identifier: "SYM-12", title: "Parent issue" },
+  }));
+
+  const childHead = (await runChecked("git", ["rev-parse", "HEAD"], { cwd: child.runPath })).stdout.trim();
+  assert.equal(child.prBaseBranch, "symphony/SYM-12-parent-issue");
+  assert.equal(childHead, parentHead);
+  assert.equal(await fs.readFile(path.join(child.runPath, "parent.txt"), "utf8"), "parent\n");
+});
+
+test("sub-issue falls back to git base branch when parent branch is missing", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "symphony-ts-git-parent-missing-"));
+  const remote = await createRemoteRepo(dir);
+  const config = resolveConfig({
+    tracker: { kind: "mock" },
+    workspace: { root: path.join(dir, "workspaces") },
+    git: {
+      enabled: true,
+      repo: remote,
+      allowed_repos: [remote],
+      base_branch: "main",
+      branch_prefix: "symphony",
+      subissue_base: "parent_issue_branch",
+    },
+  }, path.join(dir, "WORKFLOW.md"));
+
+  await commitFileToRemote(dir, remote, "main", "base.txt", "main\n", "main branch change");
+  const workspace = await new WorkspaceManager(config, new ConsoleLogger()).ensureWorkspace("SYM-13");
+  const child = await new GitWorkspaceManager(config, new ConsoleLogger()).prepare(workspace.path, issue({
+    identifier: "SYM-13",
+    title: "Child issue",
+    parent: { id: "issue-12", identifier: "SYM-12", title: "Parent issue" },
+  }));
+
+  assert.equal(child.prBaseBranch, "main");
+  assert.equal(await fs.readFile(path.join(child.runPath, "base.txt"), "utf8"), "main\n");
 });
 
 test("git workspace reuses an existing remote issue branch", async () => {
@@ -274,6 +366,76 @@ printf 'https://github.com/acme/symphony/pull/1\\n'
   }
 });
 
+test("handoff creates stacked PR against parent issue branch", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "symphony-ts-handoff-stacked-"));
+  const remote = await createRemoteRepo(dir);
+  const binDir = path.join(dir, "bin");
+  const ghLog = path.join(dir, "gh.log");
+  await fs.mkdir(binDir);
+  await fs.writeFile(path.join(binDir, "gh"), `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> ${JSON.stringify(ghLog)}
+if [[ "$1 $2" == "pr view" ]]; then
+  exit 1
+fi
+if [[ "$1 $2" == "pr create" ]]; then
+  printf 'https://github.com/acme/symphony/pull/13\\n'
+  exit 0
+fi
+printf 'unexpected gh call\\n' >&2
+exit 1
+`, { mode: 0o755 });
+
+  const oldPath = process.env.PATH;
+  process.env.PATH = `${binDir}:${oldPath ?? ""}`;
+  try {
+    const config = resolveConfig({
+      tracker: { kind: "mock" },
+      workspace: { root: path.join(dir, "workspaces") },
+      git: {
+        enabled: true,
+        repo: remote,
+        allowed_repos: [remote],
+        base_branch: "main",
+        branch_prefix: "symphony",
+        subissue_base: "parent_issue_branch",
+        commit_author_name: "Symphony",
+        commit_author_email: "symphony@example.test",
+      },
+      github: {
+        create_pr: true,
+        draft: true,
+      },
+    }, path.join(dir, "WORKFLOW.md"));
+
+    const workspace = await new WorkspaceManager(config, new ConsoleLogger()).ensureWorkspace("SYM-13");
+    const manager = new GitWorkspaceManager(config, new ConsoleLogger());
+    const parent = await manager.prepare(workspace.path, issue({ identifier: "SYM-12", title: "Parent issue" }));
+    await runChecked("git", ["config", "user.name", "Test User"], { cwd: parent.runPath });
+    await runChecked("git", ["config", "user.email", "test@example.test"], { cwd: parent.runPath });
+    await fs.writeFile(path.join(parent.runPath, "parent.txt"), "parent\n", "utf8");
+    await runChecked("git", ["add", "parent.txt"], { cwd: parent.runPath });
+    await runChecked("git", ["commit", "-m", "parent branch change"], { cwd: parent.runPath });
+    await runChecked("git", ["push", "-u", "origin", parent.branchName!], { cwd: parent.runPath });
+
+    const childIssue = issue({
+      identifier: "SYM-13",
+      title: "Child issue",
+      parent: { id: "issue-12", identifier: "SYM-12", title: "Parent issue" },
+    });
+    const child = await manager.prepare(workspace.path, childIssue);
+    await fs.writeFile(path.join(child.runPath, "child.txt"), "child\n", "utf8");
+
+    const result = await new HandoffManager(config, new ConsoleLogger()).complete(childIssue, child);
+
+    assert.equal(result.prUrl, "https://github.com/acme/symphony/pull/13");
+    const ghCalls = await fs.readFile(ghLog, "utf8");
+    assert.match(ghCalls, /pr create/);
+    assert.match(ghCalls, /--base symphony\/SYM-12-parent-issue --head symphony\/SYM-13-child-issue/);
+  } finally {
+    process.env.PATH = oldPath;
+  }
+});
+
 test("handoff reuses an existing PR for the issue branch", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "symphony-ts-handoff-pr-reuse-"));
   const remote = await createRemoteRepo(dir);
@@ -424,6 +586,7 @@ function issue(overrides: Partial<Issue> = {}): Issue {
     priority: null,
     state: "Todo",
     branch_name: null,
+    parent: null,
     url: "https://linear.app/acme/issue/SYM-1",
     labels: [],
     blocked_by: [],

@@ -27,6 +27,7 @@ git:
     - https://github.com/LucasChen-Turing/symphony.git
   base_branch: lucas/build-symphony-app
   branch_prefix: symphony
+  subissue_base: parent_issue_branch
   validation_command: cd apps/symphony-ts && npm test && npm run build
   commit_author_name: Symphony
   commit_author_email: symphony@example.local

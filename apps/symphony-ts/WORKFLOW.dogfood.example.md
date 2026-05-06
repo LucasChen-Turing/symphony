@@ -28,6 +28,7 @@ git:
     - git@github.com:YOUR_ACCOUNT_OR_ORG/symphony.git
   base_branch: main
   branch_prefix: symphony
+  subissue_base: parent_issue_branch
   validation_command: npm test && npm run build
   commit_author_name: Symphony
   commit_author_email: symphony@example.local

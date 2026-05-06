@@ -19,6 +19,7 @@ export class GitWorkspaceManager {
         workspacePath,
         runPath: workspacePath,
         branchName: null,
+        prBaseBranch: null,
         repoUrl: null,
       };
     }
@@ -32,12 +33,14 @@ export class GitWorkspaceManager {
     await this.ensureRepo(workspacePath, repoPath, repo);
     await this.ensureLocalExcludes(repoPath);
     const branchName = buildBranchName(this.config.git.branchPrefix, issue);
-    await this.checkoutBranch(repoPath, branchName);
+    const baseBranch = await this.resolveBaseBranch(repoPath, issue);
+    await this.checkoutBranch(repoPath, branchName, baseBranch);
 
     return {
       workspacePath,
       runPath: repoPath,
       branchName,
+      prBaseBranch: baseBranch,
       repoUrl: repo,
     };
   }
@@ -85,8 +88,33 @@ export class GitWorkspaceManager {
     }
   }
 
-  private async checkoutBranch(repoPath: string, branchName: string): Promise<void> {
+  private async resolveBaseBranch(repoPath: string, issue: Issue): Promise<string> {
     const base = this.config.git.baseBranch;
+    if (this.config.git.subissueBase !== "parent_issue_branch" || !issue.parent?.identifier) {
+      return base;
+    }
+
+    const parentBranch = await this.findRemoteIssueBranch(repoPath, issue.parent.identifier);
+    if (parentBranch) {
+      this.logger.info("git sub-issue parent branch selected", {
+        cwd: repoPath,
+        issue_identifier: issue.identifier,
+        parent_issue_identifier: issue.parent.identifier,
+        base_branch: parentBranch,
+      });
+      return parentBranch;
+    }
+
+    this.logger.warn("git sub-issue parent branch missing; falling back to base branch", {
+      cwd: repoPath,
+      issue_identifier: issue.identifier,
+      parent_issue_identifier: issue.parent.identifier,
+      base_branch: base,
+    });
+    return base;
+  }
+
+  private async checkoutBranch(repoPath: string, branchName: string, base: string): Promise<void> {
     const remote = this.config.github.remote;
 
     if (branchName === base || branchName === "main" || branchName === "master") {
@@ -107,7 +135,10 @@ export class GitWorkspaceManager {
 
     let baseRef = `${remote}/${base}`;
     try {
-      await runChecked("git", ["fetch", remote, base], { cwd: repoPath, timeoutMs: 300000 });
+      await runChecked("git", ["fetch", remote, `refs/heads/${base}:refs/remotes/${remote}/${base}`], {
+        cwd: repoPath,
+        timeoutMs: 300000,
+      });
     } catch (error) {
       this.logger.warn("git fetch failed; falling back to local base branch", {
         cwd: repoPath,
@@ -128,6 +159,33 @@ export class GitWorkspaceManager {
       `refs/heads/${branchName}:refs/remotes/${remote}/${branchName}`,
     ], { cwd: repoPath, timeoutMs: 300000 });
     return result.code === 0;
+  }
+
+  private async findRemoteIssueBranch(repoPath: string, issueIdentifier: string): Promise<string | null> {
+    const remote = this.config.github.remote;
+    const safePrefix = sanitizeBranchPart(this.config.git.branchPrefix).replace(/^\/+|\/+$/g, "") || "symphony";
+    const issuePart = sanitizeWorkspaceKey(issueIdentifier);
+    const pattern = `refs/heads/${safePrefix}/${issuePart}*`;
+    const result = await runProcess("git", ["ls-remote", "--heads", remote, pattern], {
+      cwd: repoPath,
+      timeoutMs: 300000,
+    });
+    if (result.code !== 0) {
+      this.logger.warn("git parent branch lookup failed; falling back to base branch", {
+        cwd: repoPath,
+        parent_issue_identifier: issueIdentifier,
+        error: trimOutput(result.stderr || result.stdout),
+      });
+      return null;
+    }
+    const branches = result.stdout
+      .trim()
+      .split(/\r?\n/)
+      .map((line) => line.match(/\srefs\/heads\/(.+)$/)?.[1] ?? null)
+      .filter((branch): branch is string => branch !== null)
+      .filter((branch) => branch === `${safePrefix}/${issuePart}` || branch.startsWith(`${safePrefix}/${issuePart}-`))
+      .sort();
+    return branches[0] ?? null;
   }
 
   private async syncWithRemoteBase(repoPath: string, remote: string, branchName: string, base: string): Promise<void> {

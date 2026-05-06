@@ -121,6 +121,7 @@ function issueFields(): string {
       url
       createdAt
       updatedAt
+      parent { id identifier title }
       state { name }
       labels { nodes { name } }
       comments(first: $commentsFirst) { nodes { id body createdAt user { name displayName } } }
@@ -153,6 +154,7 @@ export function normalizeLinearIssue(raw: unknown, feedbackMaxChars = 4000): Iss
     priority: Number.isInteger(raw.priority) ? Number(raw.priority) : null,
     state,
     branch_name: stringValue(raw.branchName) ?? stringValue(raw.branch_name),
+    parent: normalizeParent(raw.parent),
     url: stringValue(raw.url),
     labels: connectionNodes(raw.labels).map((label) => stringValue(label.name)).filter((label): label is string => label !== null).map((label) => label.toLowerCase()),
     blocked_by: blockedBy(raw),
@@ -276,6 +278,21 @@ function blockedBy(raw: JsonMap): Issue["blocked_by"] {
         state: stateName(related.state),
       };
     });
+}
+
+function normalizeParent(value: unknown): Issue["parent"] {
+  if (!isObject(value)) {
+    return null;
+  }
+  const identifier = stringValue(value.identifier);
+  if (!identifier) {
+    return null;
+  }
+  return {
+    id: stringValue(value.id),
+    identifier,
+    title: stringValue(value.title),
+  };
 }
 
 function nodesAt(data: JsonMap | undefined, path: string[]): JsonMap[] {

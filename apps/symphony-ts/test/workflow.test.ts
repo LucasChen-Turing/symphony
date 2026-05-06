@@ -132,6 +132,7 @@ function sampleIssue(): Issue {
     priority: 1,
     state: "Todo",
     branch_name: null,
+    parent: null,
     url: null,
     labels: ["test"],
     blocked_by: [],
